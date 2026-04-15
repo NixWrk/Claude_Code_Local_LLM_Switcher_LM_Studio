@@ -292,11 +292,7 @@ $cmbAlias.Size = New-Object System.Drawing.Size(220, 24)
 @(
     'sonnet',
     'opus',
-    'haiku',
-    'default',
-    'claude-sonnet-4-6',
-    'claude-opus-4-6',
-    'claude-haiku-4-5'
+    'haiku'
 ) | ForEach-Object { [void]$cmbAlias.Items.Add($_) }
 $cmbAlias.SelectedIndex = 0
 $form.Controls.Add($cmbAlias)
@@ -339,26 +335,40 @@ $lblContextHint.AutoSize = $true
 $lblContextHint.Location = New-Object System.Drawing.Point(750, 45)
 $form.Controls.Add($lblContextHint)
 
+$lblAliasStatus = New-Object System.Windows.Forms.Label
+$lblAliasStatus.Text = 'Loaded aliases (sonnet/opus/haiku):'
+$lblAliasStatus.AutoSize = $true
+$lblAliasStatus.Location = New-Object System.Drawing.Point(12, 78)
+$form.Controls.Add($lblAliasStatus)
+
+$txtAliasStatus = New-Object System.Windows.Forms.TextBox
+$txtAliasStatus.Location = New-Object System.Drawing.Point(12, 98)
+$txtAliasStatus.Size = New-Object System.Drawing.Size(978, 54)
+$txtAliasStatus.Multiline = $true
+$txtAliasStatus.ReadOnly = $true
+$txtAliasStatus.ScrollBars = 'Vertical'
+$form.Controls.Add($txtAliasStatus)
+
 $lblFilter = New-Object System.Windows.Forms.Label
 $lblFilter.Text = 'Filter:'
 $lblFilter.AutoSize = $true
-$lblFilter.Location = New-Object System.Drawing.Point(12, 78)
+$lblFilter.Location = New-Object System.Drawing.Point(12, 162)
 $form.Controls.Add($lblFilter)
 
 $txtFilter = New-Object System.Windows.Forms.TextBox
-$txtFilter.Location = New-Object System.Drawing.Point(60, 74)
+$txtFilter.Location = New-Object System.Drawing.Point(60, 158)
 $txtFilter.Size = New-Object System.Drawing.Size(590, 24)
 $form.Controls.Add($txtFilter)
 
 $btnRefresh = New-Object System.Windows.Forms.Button
 $btnRefresh.Text = 'Refresh Models'
-$btnRefresh.Location = New-Object System.Drawing.Point(660, 72)
+$btnRefresh.Location = New-Object System.Drawing.Point(660, 156)
 $btnRefresh.Size = New-Object System.Drawing.Size(170, 28)
 $form.Controls.Add($btnRefresh)
 
 $listView = New-Object System.Windows.Forms.ListView
-$listView.Location = New-Object System.Drawing.Point(12, 108)
-$listView.Size = New-Object System.Drawing.Size(978, 430)
+$listView.Location = New-Object System.Drawing.Point(12, 194)
+$listView.Size = New-Object System.Drawing.Size(978, 344)
 $listView.View = 'Details'
 $listView.FullRowSelect = $true
 $listView.MultiSelect = $false
@@ -404,6 +414,8 @@ $logBox.ReadOnly = $true
 $form.Controls.Add($logBox)
 
 $script:AllModels = @()
+$script:SortColumn = 0
+$script:SortDescending = $false
 
 function Get-TargetAlias {
     if ($chkCustomAlias.Checked) {
@@ -418,6 +430,61 @@ function Get-TargetAlias {
 
 function Get-TargetContextLength {
     return [int]$numContext.Value
+}
+
+function Get-ModelNumericParamValue {
+    param([string]$ParamString)
+
+    if (-not $ParamString) {
+        return -1.0
+    }
+    $m = [regex]::Match($ParamString, '([0-9]+(?:\.[0-9]+)?)')
+    if ($m.Success) {
+        return [double]$m.Groups[1].Value
+    }
+    return -1.0
+}
+
+function Get-SortKey {
+    param(
+        $Model,
+        [int]$ColumnIndex
+    )
+
+    switch ($ColumnIndex) {
+        0 { return [string]$Model.modelKey }
+        1 { return [string]$Model.displayName }
+        2 { return [string]$Model.publisher }
+        3 {
+            if ($Model.PSObject.Properties.Name -contains 'sizeBytes' -and $Model.sizeBytes) {
+                return [double]$Model.sizeBytes
+            }
+            return -1.0
+        }
+        4 { return (Get-ModelNumericParamValue -ParamString ([string]$Model.paramsString)) }
+        5 { return [string]$Model.architecture }
+        default { return [string]$Model.modelKey }
+    }
+}
+
+function Refresh-AliasStatus {
+    try {
+        $loaded = Get-LoadedLlmInstances
+        $lines = @()
+        foreach ($aliasName in @('sonnet', 'opus', 'haiku')) {
+            $item = $loaded | Where-Object { $_.identifier -eq $aliasName } | Select-Object -First 1
+            if ($item) {
+                $lines += ("{0}: {1} | ctx={2} | status={3}" -f $aliasName, $item.modelKey, $item.contextLength, $item.status)
+            }
+            else {
+                $lines += ("{0}: <not loaded>" -f $aliasName)
+            }
+        }
+        $txtAliasStatus.Text = ($lines -join [Environment]::NewLine)
+    }
+    catch {
+        $txtAliasStatus.Text = "Unable to read loaded aliases: $($_.Exception.Message)"
+    }
 }
 
 function Refresh-ModelList {
@@ -436,7 +503,11 @@ function Refresh-ModelList {
             }
         }
 
-        foreach ($m in $filtered) {
+        $sorted = $filtered | Sort-Object `
+            @{ Expression = { Get-SortKey -Model $_ -ColumnIndex $script:SortColumn }; Descending = $script:SortDescending }, `
+            @{ Expression = { [string]$_.modelKey }; Descending = $false }
+
+        foreach ($m in $sorted) {
             $item = New-Object System.Windows.Forms.ListViewItem([string]$m.modelKey)
             [void]$item.SubItems.Add([string]$m.displayName)
             [void]$item.SubItems.Add([string]$m.publisher)
@@ -452,6 +523,7 @@ function Refresh-ModelList {
         }
 
         Write-Log -Box $logBox -Message "Loaded $($filtered.Count) model(s) from LM Studio catalog."
+        Refresh-AliasStatus
     }
     catch {
         Write-Log -Box $logBox -Message "Refresh failed: $($_.Exception.Message)"
@@ -460,6 +532,17 @@ function Refresh-ModelList {
 
 $btnRefresh.Add_Click({ Refresh-ModelList })
 $txtFilter.Add_TextChanged({ Refresh-ModelList })
+$listView.Add_ColumnClick({
+    param($sender, $e)
+    if ($script:SortColumn -eq $e.Column) {
+        $script:SortDescending = -not $script:SortDescending
+    }
+    else {
+        $script:SortColumn = $e.Column
+        $script:SortDescending = $false
+    }
+    Refresh-ModelList
+})
 
 $btnShowLoaded.Add_Click({
     try {
@@ -472,6 +555,7 @@ $btnShowLoaded.Add_Click({
         foreach ($m in $llm) {
             Write-Log -Box $logBox -Message ("loaded: identifier='{0}', modelKey='{1}', status='{2}', parallel={3}, ctx={4}, maxCtx={5}" -f $m.identifier, $m.modelKey, $m.status, $m.parallel, $m.contextLength, $m.maxContextLength)
         }
+        Refresh-AliasStatus
     }
     catch {
         Write-Log -Box $logBox -Message "Unable to list loaded models: $($_.Exception.Message)"
@@ -505,6 +589,7 @@ $btnBind.Add_Click({
             }
         }
         Write-Log -Box $logBox -Message "Done. Alias '$aliasTarget' now points to '$modelKeyTarget' (context=$([int]$contextTarget))."
+        Refresh-AliasStatus
     }
     catch {
         Write-Log -Box $logBox -Message "Bind failed: $($_.Exception.Message)"
@@ -541,6 +626,7 @@ $btnContextLoaded.Add_Click({
             }
         }
         Write-Log -Box $logBox -Message "Done. Loaded alias '$aliasTarget' context set to $contextTarget."
+        Refresh-AliasStatus
     }
     catch {
         Write-Log -Box $logBox -Message "Context update failed: $($_.Exception.Message)"

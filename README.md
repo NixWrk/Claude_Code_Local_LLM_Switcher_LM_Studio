@@ -30,8 +30,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\lmstudio_alias_switcher_gu
 
 1. Click `Refresh Models`.
 2. Select model in the list. The table includes model `Size (GiB)`.
-3. Choose alias (`sonnet`, `opus`, `haiku`, `default`) or enable `Custom alias`.
-   - For VS Code Claude Code, you can also use full ids: `claude-opus-4-6`, `claude-sonnet-4-6`, `claude-haiku-4-5`.
+3. Choose alias (`sonnet`, `opus`, `haiku`) or enable `Custom alias`.
+   - Use `Custom alias` if you need non-default id (for example `claude-opus-4-6`).
 4. Set `Context`:
    - `0` means auto/default LM Studio behavior.
    - `32768`, `65536`, `131072` etc. force explicit context length on load.
@@ -39,6 +39,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\lmstudio_alias_switcher_gu
 6. Optional: click `Test /v1/messages with Alias`.
 7. In Claude Code UI pick matching model label (for example `Sonnet` if you bound `sonnet`).
 8. If model is already loaded and you only need a bigger context, set `Context` and click `Set Context For Loaded Alias` (the script reloads the same model with new context).
+9. Column sorting:
+   - Click column header (`Model Key`, `Display Name`, `Publisher`, `Size (GiB)`, `Params`, `Arch`) to sort.
+   - Repeated click toggles ascending/descending (Explorer-style).
+10. Top status panel shows currently loaded models for `sonnet`, `opus`, `haiku`.
 
 ## Headless mode (CLI)
 
