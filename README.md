@@ -12,6 +12,7 @@ This project gives you:
 - one-click alias binding in GUI;
 - context update for already loaded aliases;
 - quick local endpoint test (`/v1/messages`);
+- isolated VS Code local-only launcher (no chat/model mixing with your main profile);
 - first-run setup script for new Windows machines.
 
 ## Requirements
@@ -26,6 +27,8 @@ This project gives you:
 
 - `run_prepare.cmd` / `prepare_windows.ps1`
   - one-time machine setup (Claude + VS Code config)
+- `run_local_vscode.cmd` / `launch_claude_local_vscode.ps1`
+  - starts VS Code with isolated local-only profile for Claude Code
 - `run_switcher_gui.cmd` / `lmstudio_alias_switcher_gui.ps1`
   - main alias switcher GUI
 
@@ -35,8 +38,9 @@ This project gives you:
 2. Start LM Studio and enable Local Server.
 3. Run:
    - `run_prepare.cmd`
-4. Open VS Code and reload window (`Developer: Reload Window`).
-5. Run:
+4. Run local-only VS Code launcher:
+   - `run_local_vscode.cmd`
+5. In that VS Code window, run:
    - `run_switcher_gui.cmd`
 6. Bind local model to `sonnet` (or `opus`/`haiku`) and test.
 
@@ -49,7 +53,26 @@ This project gives you:
 - VS Code user `settings.json`
   - `claudeCode.environmentVariables`
   - `claudeCode.disableLoginPrompt=true`
+- repo-local isolated VS Code settings
+  - `.vscode-local-userdata\User\settings.json`
+  - same local Claude Code env vars and disabled login prompt
 - Endpoint health check: `GET /v1/models`
+
+## No chat/model mixing (automated)
+
+Use `run_local_vscode.cmd` to start an isolated VS Code instance for local LM Studio work:
+
+- separate VS Code `--user-data-dir` inside this repository;
+- separate Claude Code extension state/chats from your main VS Code profile;
+- local backend settings applied automatically on launch.
+
+Optional hard reset for the isolated Claude session cache:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\launch_claude_local_vscode.ps1 -WorkspacePath "$PWD" -ResetIsolatedSession
+```
+
+This reset affects only the isolated local profile folder in this repository.
 
 ## GUI usage
 

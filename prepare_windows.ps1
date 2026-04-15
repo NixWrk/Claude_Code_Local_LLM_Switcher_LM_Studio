@@ -1,7 +1,8 @@
 param(
     [string]$BaseUrl = 'http://localhost:1234',
     [string]$AuthToken = 'lmstudio',
-    [switch]$SkipVsCodeSettings
+    [switch]$SkipVsCodeSettings,
+    [switch]$SkipIsolatedVsCodeProfile
 )
 
 $ErrorActionPreference = 'Stop'
@@ -63,14 +64,14 @@ function Write-JsonObjectNoBom {
     [System.IO.File]::WriteAllText($Path, $json, $utf8NoBom)
 }
 
-Write-Output '[1/4] Checking LM Studio CLI (lms)...'
+Write-Output '[1/5] Checking LM Studio CLI (lms)...'
 $lmsCmd = Get-Command lms -ErrorAction SilentlyContinue
 if (-not $lmsCmd) {
     throw "LM Studio CLI 'lms' was not found in PATH."
 }
 Write-Output ("  lms: {0}" -f $lmsCmd.Source)
 
-Write-Output '[2/4] Updating ~/.claude/settings.json...'
+Write-Output '[2/5] Updating ~/.claude/settings.json...'
 $claudeSettingsPath = Join-Path $env:USERPROFILE '.claude\settings.json'
 $claudeSettings = Read-JsonObject -Path $claudeSettingsPath
 if (-not ($claudeSettings.PSObject.Properties.Name -contains 'env')) {
@@ -94,7 +95,7 @@ Write-JsonObjectNoBom -Path $claudeSettingsPath -Object $claudeSettings
 Write-Output "  updated: $claudeSettingsPath"
 
 if (-not $SkipVsCodeSettings) {
-    Write-Output '[3/4] Updating VS Code user settings...'
+    Write-Output '[3/5] Updating VS Code user settings...'
     $vsCodeSettingsPath = Join-Path $env:APPDATA 'Code\User\settings.json'
     $vsCodeSettings = Read-JsonObject -Path $vsCodeSettingsPath
 
@@ -109,10 +110,10 @@ if (-not $SkipVsCodeSettings) {
     Write-Output "  updated: $vsCodeSettingsPath"
 }
 else {
-    Write-Output '[3/4] Skipping VS Code settings (requested).'
+    Write-Output '[3/5] Skipping VS Code settings (requested).'
 }
 
-Write-Output '[4/4] Checking endpoint health...'
+Write-Output '[4/5] Checking endpoint health...'
 try {
     $modelsUrl = "$BaseUrl/v1/models"
     $resp = Invoke-WebRequest -UseBasicParsing -Uri $modelsUrl -Method Get -TimeoutSec 15
@@ -123,9 +124,28 @@ catch {
     Write-Output "  details: $($_.Exception.Message)"
 }
 
+if (-not $SkipIsolatedVsCodeProfile) {
+    Write-Output '[5/5] Preparing isolated VS Code local profile settings...'
+    $isolatedUserDataDir = Join-Path $PSScriptRoot '.vscode-local-userdata'
+    $isolatedSettingsPath = Join-Path $isolatedUserDataDir 'User\settings.json'
+    $isolatedSettings = Read-JsonObject -Path $isolatedSettingsPath
+    $isolatedEnvVars = @(
+        [pscustomobject]@{ name = 'ANTHROPIC_BASE_URL'; value = $BaseUrl },
+        [pscustomobject]@{ name = 'ANTHROPIC_AUTH_TOKEN'; value = $AuthToken }
+    )
+    Set-Or-AddProperty -Object $isolatedSettings -Name 'claudeCode.environmentVariables' -Value $isolatedEnvVars
+    Set-Or-AddProperty -Object $isolatedSettings -Name 'claudeCode.disableLoginPrompt' -Value $true
+    Write-JsonObjectNoBom -Path $isolatedSettingsPath -Object $isolatedSettings
+    Write-Output "  prepared: $isolatedSettingsPath"
+}
+else {
+    Write-Output '[5/5] Skipping isolated VS Code profile prep (requested).'
+}
+
 Write-Output ''
 Write-Output 'Setup complete.'
 Write-Output 'Next steps:'
 Write-Output '1) Start LM Studio Local Server on the configured BaseUrl.'
-Write-Output '2) In switcher GUI, bind sonnet/opus/haiku to loaded local models.'
-Write-Output '3) Reload VS Code window and test a short prompt.'
+Write-Output '2) For isolated local-only mode run: run_local_vscode.cmd'
+Write-Output '3) In switcher GUI, bind sonnet/opus/haiku to loaded local models.'
+Write-Output '4) Test a short prompt in Claude Code chat.'
