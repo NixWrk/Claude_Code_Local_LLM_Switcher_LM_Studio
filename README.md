@@ -26,6 +26,22 @@ Or start from terminal:
 powershell -NoProfile -ExecutionPolicy Bypass -File .\lmstudio_alias_switcher_gui.ps1
 ```
 
+## First-time setup (new Windows PC)
+
+Run once:
+
+- `run_prepare.cmd`
+
+What it does:
+
+- verifies `lms` is available in `PATH`;
+- updates `~/.claude/settings.json` with:
+  - `ANTHROPIC_BASE_URL`
+  - `ANTHROPIC_AUTH_TOKEN`
+  - `CLAUDE_CODE_ATTRIBUTION_HEADER=0`
+- updates VS Code `settings.json` with `claudeCode.environmentVariables` and `claudeCode.disableLoginPrompt`;
+- checks endpoint health via `/v1/models`.
+
 ## GUI workflow
 
 1. Click `Refresh Models`.
