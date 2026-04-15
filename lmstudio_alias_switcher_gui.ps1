@@ -12,8 +12,39 @@ if ($ContextLength -lt 0) {
     throw 'ContextLength must be >= 0.'
 }
 
+function Normalize-LmsOutput {
+    param([string]$Text)
+
+    if (-not $Text) {
+        return ''
+    }
+
+    $clean = $Text -replace "`0", ''
+    $esc = [char]27
+    $clean = [regex]::Replace($clean, "$([regex]::Escape($esc))\[[0-9;?]*[ -/]*[@-~]", '')
+
+    $lines = @()
+    foreach ($rawLine in ($clean -split "(`r`n|`n|`r)")) {
+        $line = $rawLine.Trim()
+        if (-not $line) { continue }
+        if ($line -match '^\[\?25[hl]$') { continue }
+        if ($line -match '^Loading\s+') { continue }
+        if ($line -match '\[CliPref\] Error writing data to file') { continue }
+        $lines += $line
+    }
+
+    if ($lines.Count -eq 0) {
+        return ''
+    }
+
+    return ($lines -join [Environment]::NewLine).Trim()
+}
+
 function Run-LmsCommand {
-    param([string[]]$CommandArgs)
+    param(
+        [string[]]$CommandArgs,
+        [switch]$JsonMode
+    )
 
     $cmd = Get-Command lms -ErrorAction SilentlyContinue
     if (-not $cmd) {
@@ -23,36 +54,47 @@ function Run-LmsCommand {
         throw 'No lms arguments provided.'
     }
 
-    $hasNativePref = $null -ne (Get-Variable -Name PSNativeCommandUseErrorActionPreference -ErrorAction SilentlyContinue)
-    if ($hasNativePref) {
-        $oldNativePref = $PSNativeCommandUseErrorActionPreference
-        $PSNativeCommandUseErrorActionPreference = $false
-    }
-
-    $oldEap = $ErrorActionPreference
-    $ErrorActionPreference = 'Continue'
+    $stdoutPath = [System.IO.Path]::GetTempFileName()
+    $stderrPath = [System.IO.Path]::GetTempFileName()
+    $stdout = ''
+    $stderr = ''
     try {
-        $output = & lms @CommandArgs 2>&1 | Out-String
-        $exitCode = $LASTEXITCODE
+        $proc = Start-Process -FilePath $cmd.Source -ArgumentList $CommandArgs -NoNewWindow -Wait -PassThru -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+        if (Test-Path $stdoutPath) {
+            $stdout = Get-Content -Path $stdoutPath -Raw -ErrorAction SilentlyContinue
+        }
+        if (Test-Path $stderrPath) {
+            $stderr = Get-Content -Path $stderrPath -Raw -ErrorAction SilentlyContinue
+        }
+        $exitCode = $proc.ExitCode
     }
     finally {
-        $ErrorActionPreference = $oldEap
-        if ($hasNativePref) {
-            $PSNativeCommandUseErrorActionPreference = $oldNativePref
+        if (Test-Path $stdoutPath) {
+            Remove-Item -LiteralPath $stdoutPath -Force -ErrorAction SilentlyContinue
+        }
+        if (Test-Path $stderrPath) {
+            Remove-Item -LiteralPath $stderrPath -Force -ErrorAction SilentlyContinue
         }
     }
 
+    $combined = ($stdout, $stderr -join [Environment]::NewLine)
+    $normalized = Normalize-LmsOutput -Text $combined
+    $jsonPayload = if ($stdout) { $stdout.Trim() } else { '' }
+
     if ($exitCode -ne 0) {
-        throw "lms command failed (exit $exitCode): lms $($CommandArgs -join ' ')`n$output"
+        throw "lms command failed (exit $exitCode): lms $($CommandArgs -join ' ')`n$normalized"
     }
 
-    return $output
+    if ($JsonMode) {
+        return $jsonPayload
+    }
+    return $normalized
 }
 
 function Get-LmsJson {
     param([string[]]$CommandArgs)
 
-    $raw = Run-LmsCommand -CommandArgs $CommandArgs
+    $raw = Run-LmsCommand -CommandArgs $CommandArgs -JsonMode
     if (-not $raw.Trim()) {
         return @()
     }
@@ -404,8 +446,12 @@ $btnBind.Add_Click({
         }
         $out = Bind-ModelAlias -BindAlias $aliasTarget -BindModelKey $modelKeyTarget -BindContextLength $contextTarget
         if ($out.Trim()) {
-            $oneLine = ($out -replace "`r`n", ' ') -replace '\s+', ' '
-            Write-Log -Box $logBox -Message $oneLine.Trim()
+            foreach ($line in ($out -split "(`r`n|`n|`r)")) {
+                $trimmed = $line.Trim()
+                if ($trimmed) {
+                    Write-Log -Box $logBox -Message $trimmed
+                }
+            }
         }
         Write-Log -Box $logBox -Message "Done. Alias '$aliasTarget' now points to '$modelKeyTarget' (context=$([int]$contextTarget))."
     }
