@@ -31,6 +31,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\lmstudio_alias_switcher_gu
 1. Click `Refresh Models`.
 2. Select model in the list. The table includes model `Size (GiB)`.
 3. Choose alias (`sonnet`, `opus`, `haiku`, `default`) or enable `Custom alias`.
+   - For VS Code Claude Code, you can also use full ids: `claude-opus-4-6`, `claude-sonnet-4-6`, `claude-haiku-4-5`.
 4. Set `Context`:
    - `0` means auto/default LM Studio behavior.
    - `32768`, `65536`, `131072` etc. force explicit context length on load.
@@ -51,13 +52,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\lmstudio_alias_switcher_gu
 - Bind alias to model key:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\lmstudio_alias_switcher_gui.ps1 -Headless -Alias sonnet -ModelKey "p6_google_gemma-4-26b-a4b@q4_k_m" -ContextLength 32768
+powershell -NoProfile -ExecutionPolicy Bypass -File .\lmstudio_alias_switcher_gui.ps1 -Headless -Alias claude-opus-4-6 -ModelKey "p6_google_gemma-4-26b-a4b@q8_0" -ContextLength 32768
 ```
 
 - Bind and immediately test endpoint:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\lmstudio_alias_switcher_gui.ps1 -Headless -Alias sonnet -ModelKey "p6_google_gemma-4-26b-a4b@q4_k_m" -ContextLength 32768 -TestAlias
+powershell -NoProfile -ExecutionPolicy Bypass -File .\lmstudio_alias_switcher_gui.ps1 -Headless -Alias claude-opus-4-6 -ModelKey "p6_google_gemma-4-26b-a4b@q8_0" -ContextLength 32768 -TestAlias
 ```
 
 ## Notes

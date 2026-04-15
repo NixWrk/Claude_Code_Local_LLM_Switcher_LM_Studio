@@ -130,7 +130,7 @@ function Bind-ModelAlias {
 
     $loadArgs = @('load', $BindModelKey, '--identifier', $BindAlias, '-y')
     if ($BindContextLength -gt 0) {
-        $loadArgs += @('--context-length', "$BindContextLength")
+        $loadArgs += @('-c', "$BindContextLength")
     }
     $loadOut = Run-LmsCommand -CommandArgs $loadArgs
     if ($loadOut.Trim()) {
@@ -251,19 +251,27 @@ $form.Controls.Add($lblAlias)
 $cmbAlias = New-Object System.Windows.Forms.ComboBox
 $cmbAlias.DropDownStyle = 'DropDownList'
 $cmbAlias.Location = New-Object System.Drawing.Point(60, 40)
-$cmbAlias.Size = New-Object System.Drawing.Size(140, 24)
-@('sonnet', 'opus', 'haiku', 'default') | ForEach-Object { [void]$cmbAlias.Items.Add($_) }
+$cmbAlias.Size = New-Object System.Drawing.Size(220, 24)
+@(
+    'sonnet',
+    'opus',
+    'haiku',
+    'default',
+    'claude-sonnet-4-6',
+    'claude-opus-4-6',
+    'claude-haiku-4-5'
+) | ForEach-Object { [void]$cmbAlias.Items.Add($_) }
 $cmbAlias.SelectedIndex = 0
 $form.Controls.Add($cmbAlias)
 
 $chkCustomAlias = New-Object System.Windows.Forms.CheckBox
 $chkCustomAlias.Text = 'Custom alias'
 $chkCustomAlias.AutoSize = $true
-$chkCustomAlias.Location = New-Object System.Drawing.Point(220, 43)
+$chkCustomAlias.Location = New-Object System.Drawing.Point(290, 43)
 $form.Controls.Add($chkCustomAlias)
 
 $txtCustomAlias = New-Object System.Windows.Forms.TextBox
-$txtCustomAlias.Location = New-Object System.Drawing.Point(320, 40)
+$txtCustomAlias.Location = New-Object System.Drawing.Point(390, 40)
 $txtCustomAlias.Size = New-Object System.Drawing.Size(180, 24)
 $txtCustomAlias.Enabled = $false
 $form.Controls.Add($txtCustomAlias)
@@ -275,11 +283,11 @@ $chkCustomAlias.Add_CheckedChanged({
 $lblContext = New-Object System.Windows.Forms.Label
 $lblContext.Text = 'Context:'
 $lblContext.AutoSize = $true
-$lblContext.Location = New-Object System.Drawing.Point(520, 45)
+$lblContext.Location = New-Object System.Drawing.Point(580, 45)
 $form.Controls.Add($lblContext)
 
 $numContext = New-Object System.Windows.Forms.NumericUpDown
-$numContext.Location = New-Object System.Drawing.Point(580, 40)
+$numContext.Location = New-Object System.Drawing.Point(640, 40)
 $numContext.Size = New-Object System.Drawing.Size(100, 24)
 $numContext.Minimum = 0
 $numContext.Maximum = 1048576
@@ -291,7 +299,7 @@ $form.Controls.Add($numContext)
 $lblContextHint = New-Object System.Windows.Forms.Label
 $lblContextHint.Text = '0 = auto'
 $lblContextHint.AutoSize = $true
-$lblContextHint.Location = New-Object System.Drawing.Point(690, 45)
+$lblContextHint.Location = New-Object System.Drawing.Point(750, 45)
 $form.Controls.Add($lblContextHint)
 
 $lblFilter = New-Object System.Windows.Forms.Label
