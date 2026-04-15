@@ -1,97 +1,110 @@
-# Claude Code Local LLM Switcher (LM Studio)
+# Claude Code Local LLM Switcher (Windows + LM Studio)
 
-Small utility for Windows to re-bind Claude model aliases (`sonnet`, `opus`, `haiku`, `default`) to any local model in LM Studio.
+GUI/CLI utility for Windows that helps map Claude Code aliases (`sonnet`, `opus`, `haiku`) to local LM Studio models and control model context size.
 
-## Why this exists
+## What problem it solves
 
-Claude Code sends a model name on every request. Setting only `ANTHROPIC_BASE_URL=http://localhost:1234` is not enough if LM Studio does not have a matching model identifier.
+Claude Code sends a model name in each request.  
+Pointing to `ANTHROPIC_BASE_URL=http://localhost:1234` is not enough unless LM Studio has a loaded model with a matching identifier.
 
-This tool lets you switch alias mapping quickly without editing config every time.
+This project gives you:
+
+- one-click alias binding in GUI;
+- context update for already loaded aliases;
+- quick local endpoint test (`/v1/messages`);
+- first-run setup script for new Windows machines.
 
 ## Requirements
 
+- Windows (PowerShell 5.1+)
 - LM Studio installed
-- LM Studio CLI `lms` available in PATH
-- LM Studio Local Server running on `http://localhost:1234`
+- LM Studio CLI `lms` available in `PATH`
+- LM Studio Local Server enabled (default: `http://localhost:1234`)
+- VS Code + Claude Code extension (recommended usage path)
 
-## Run GUI
+## Repository files
 
-Double-click:
+- `run_prepare.cmd` / `prepare_windows.ps1`
+  - one-time machine setup (Claude + VS Code config)
+- `run_switcher_gui.cmd` / `lmstudio_alias_switcher_gui.ps1`
+  - main alias switcher GUI
 
-- `run_switcher_gui.cmd`
+## Quick start (new Windows PC)
 
-Or start from terminal:
+1. Clone/copy this repository.
+2. Start LM Studio and enable Local Server.
+3. Run:
+   - `run_prepare.cmd`
+4. Open VS Code and reload window (`Developer: Reload Window`).
+5. Run:
+   - `run_switcher_gui.cmd`
+6. Bind local model to `sonnet` (or `opus`/`haiku`) and test.
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\lmstudio_alias_switcher_gui.ps1
-```
+## What `prepare_windows.ps1` configures
 
-## First-time setup (new Windows PC)
-
-Run once:
-
-- `run_prepare.cmd`
-
-What it does:
-
-- verifies `lms` is available in `PATH`;
-- updates `~/.claude/settings.json` with:
+- `~/.claude/settings.json`
   - `ANTHROPIC_BASE_URL`
   - `ANTHROPIC_AUTH_TOKEN`
   - `CLAUDE_CODE_ATTRIBUTION_HEADER=0`
-- updates VS Code `settings.json` with `claudeCode.environmentVariables` and `claudeCode.disableLoginPrompt`;
-- checks endpoint health via `/v1/models`.
+- VS Code user `settings.json`
+  - `claudeCode.environmentVariables`
+  - `claudeCode.disableLoginPrompt=true`
+- Endpoint health check: `GET /v1/models`
 
-## GUI workflow
+## GUI usage
 
 1. Click `Refresh Models`.
-2. Select model in the list. The table includes model `Size (GiB)`.
-3. Choose alias (`sonnet`, `opus`, `haiku`) or enable `Custom alias`.
-   - Use `Custom alias` if you need non-default id (for example `claude-opus-4-6`).
+2. Select a model in the table (`Model Key`, `Display Name`, `Publisher`, `Size (GiB)`, `Params`, `Arch`).
+3. Select alias:
+   - default dropdown: `sonnet`, `opus`, `haiku`
+   - or enable `Custom alias` for custom names (for example `claude-opus-4-6`)
 4. Set `Context`:
-   - `0` means auto/default LM Studio behavior.
-   - `32768`, `65536`, `131072` etc. force explicit context length on load.
+   - `0` = auto
+   - `>0` = explicit `n_ctx` on load (for example `32768`)
 5. Click `Bind Alias To Selected Model`.
 6. Optional: click `Test /v1/messages with Alias`.
-7. In Claude Code UI pick matching model label (for example `Sonnet` if you bound `sonnet`).
-8. If model is already loaded and you only need a bigger context, set `Context` and click `Set Context For Loaded Alias` (the script reloads the same model with new context).
-9. Column sorting:
-   - Click column header (`Model Key`, `Display Name`, `Publisher`, `Size (GiB)`, `Params`, `Arch`) to sort.
-   - Repeated click toggles ascending/descending (Explorer-style).
-10. Top status panel shows currently loaded models for `sonnet`, `opus`, `haiku`.
+
+Extra GUI features:
+
+- `Set Context For Loaded Alias`
+  - reloads currently loaded alias with a new context
+- `Show Loaded Models`
+  - prints loaded model instances and context
+- top status panel
+  - shows what is currently loaded for `sonnet`/`opus`/`haiku`
+- table sorting
+  - click any column header to sort
+  - repeated click toggles ascending/descending (Explorer-style)
 
 ## Headless mode (CLI)
 
-You can use the same script without opening GUI.
-
-- Show loaded instances:
+Show loaded aliases:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\lmstudio_alias_switcher_gui.ps1 -Headless -ShowLoaded
 ```
 
-- Bind alias to model key:
+Bind alias to model:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\lmstudio_alias_switcher_gui.ps1 -Headless -Alias claude-opus-4-6 -ModelKey "p6_google_gemma-4-26b-a4b@q8_0" -ContextLength 32768
+powershell -NoProfile -ExecutionPolicy Bypass -File .\lmstudio_alias_switcher_gui.ps1 -Headless -Alias sonnet -ModelKey "p6_google_gemma-4-e4b@q6_k" -ContextLength 32768
 ```
 
-- Bind and immediately test endpoint:
+Bind and test:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\lmstudio_alias_switcher_gui.ps1 -Headless -Alias claude-opus-4-6 -ModelKey "p6_google_gemma-4-26b-a4b@q8_0" -ContextLength 32768 -TestAlias
+powershell -NoProfile -ExecutionPolicy Bypass -File .\lmstudio_alias_switcher_gui.ps1 -Headless -Alias sonnet -ModelKey "p6_google_gemma-4-e4b@q6_k" -ContextLength 32768 -TestAlias
 ```
 
-- Increase context for an already loaded alias (reload same model):
+Update context for already loaded alias:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\lmstudio_alias_switcher_gui.ps1 -Headless -Alias sonnet -ContextLength 32768
 ```
 
-## Notes
+## Operational notes
 
-- Existing alias is re-bound automatically (script unloads old alias instance and loads new target model).
-- `ctx=4096` in logs means the model instance was loaded with that context. Re-bind with higher `Context` to increase it.
-- The script does not change Claude Code menu labels, it changes which local model LM Studio serves for alias.
-- Re-binding is reversible any time: just bind alias again to another model.
-- If you see `No models loaded`, bind alias to an actually loaded model first.
+- Rebinding is reversible: just bind the same alias to another model.
+- If responses are slow, first check `ctx` and loaded model size.
+- If you see `No models loaded`, load/bind alias before sending requests from Claude Code.
+- This tool changes LM Studio alias mapping; it does not rename Claude Code UI labels.
