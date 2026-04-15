@@ -38,6 +38,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\lmstudio_alias_switcher_gu
 5. Click `Bind Alias To Selected Model`.
 6. Optional: click `Test /v1/messages with Alias`.
 7. In Claude Code UI pick matching model label (for example `Sonnet` if you bound `sonnet`).
+8. If model is already loaded and you only need a bigger context, set `Context` and click `Set Context For Loaded Alias` (the script reloads the same model with new context).
 
 ## Headless mode (CLI)
 
@@ -59,6 +60,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\lmstudio_alias_switcher_gu
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\lmstudio_alias_switcher_gui.ps1 -Headless -Alias claude-opus-4-6 -ModelKey "p6_google_gemma-4-26b-a4b@q8_0" -ContextLength 32768 -TestAlias
+```
+
+- Increase context for an already loaded alias (reload same model):
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\lmstudio_alias_switcher_gui.ps1 -Headless -Alias sonnet -ContextLength 32768
 ```
 
 ## Notes

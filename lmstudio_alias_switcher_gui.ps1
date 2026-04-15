@@ -140,6 +140,28 @@ function Bind-ModelAlias {
     return ($logParts -join [Environment]::NewLine)
 }
 
+function Reload-LoadedAliasContext {
+    param(
+        [Parameter(Mandatory = $true)][string]$AliasToReload,
+        [Parameter(Mandatory = $true)][int]$NewContextLength
+    )
+
+    if ($NewContextLength -le 0) {
+        throw 'NewContextLength must be > 0 for loaded alias context update.'
+    }
+
+    $existing = Get-LoadedLlmInstances | Where-Object { $_.identifier -eq $AliasToReload } | Select-Object -First 1
+    if (-not $existing) {
+        throw "Alias '$AliasToReload' is not loaded. Use Bind first, then update context."
+    }
+
+    if ($existing.contextLength -eq $NewContextLength) {
+        return "Alias '$AliasToReload' already has ctx=$NewContextLength. No reload needed."
+    }
+
+    return (Bind-ModelAlias -BindAlias $AliasToReload -BindModelKey ([string]$existing.modelKey) -BindContextLength $NewContextLength)
+}
+
 function Test-AnthropicEndpoint {
     param([Parameter(Mandatory = $true)][string]$AliasToTest)
 
@@ -175,6 +197,8 @@ function Test-AnthropicEndpoint {
 }
 
 if ($Headless) {
+    $didAction = $false
+
     if ($ShowLoaded) {
         $instances = Get-LoadedLlmInstances
         if ($instances.Count -eq 0) {
@@ -185,6 +209,7 @@ if ($Headless) {
                 Write-Output ("loaded: identifier='{0}', modelKey='{1}', status='{2}', parallel={3}, ctx={4}, maxCtx={5}" -f $m.identifier, $m.modelKey, $m.status, $m.parallel, $m.contextLength, $m.maxContextLength)
             }
         }
+        $didAction = $true
     }
 
     if ($Alias -and $ModelKey) {
@@ -197,8 +222,18 @@ if ($Headless) {
             Write-Output $bindOutput.Trim()
         }
         Write-Output "Done. Alias '$Alias' now points to '$ModelKey'."
+        $didAction = $true
     }
-    elseif ($Alias -or $ModelKey) {
+    elseif ($Alias -and $ContextLength -gt 0) {
+        Write-Output "Updating context for loaded alias '$Alias' to $ContextLength..."
+        $reloadOutput = Reload-LoadedAliasContext -AliasToReload $Alias -NewContextLength $ContextLength
+        if ($reloadOutput.Trim()) {
+            Write-Output $reloadOutput.Trim()
+        }
+        Write-Output "Done. Alias '$Alias' context updated to $ContextLength."
+        $didAction = $true
+    }
+    elseif ($ModelKey -and -not $Alias) {
         throw 'For headless binding, provide both -Alias and -ModelKey.'
     }
 
@@ -208,11 +243,13 @@ if ($Headless) {
         }
         $testResult = Test-AnthropicEndpoint -AliasToTest $Alias
         Write-Output $testResult
+        $didAction = $true
     }
 
-    if (-not $ShowLoaded -and -not ($Alias -and $ModelKey) -and -not $TestAlias) {
+    if (-not $didAction) {
         Write-Output 'Headless mode: no action requested.'
         Write-Output 'Example: -Headless -Alias sonnet -ModelKey mistralai/ministral-3-3b -ContextLength 32768 -TestAlias'
+        Write-Output 'Context-only: -Headless -Alias sonnet -ContextLength 32768'
     }
 
     exit 0
@@ -352,6 +389,12 @@ $btnTest.Location = New-Object System.Drawing.Point(520, 550)
 $btnTest.Size = New-Object System.Drawing.Size(240, 34)
 $form.Controls.Add($btnTest)
 
+$btnContextLoaded = New-Object System.Windows.Forms.Button
+$btnContextLoaded.Text = 'Set Context For Loaded Alias'
+$btnContextLoaded.Location = New-Object System.Drawing.Point(770, 550)
+$btnContextLoaded.Size = New-Object System.Drawing.Size(220, 34)
+$form.Controls.Add($btnContextLoaded)
+
 $logBox = New-Object System.Windows.Forms.TextBox
 $logBox.Location = New-Object System.Drawing.Point(12, 592)
 $logBox.Size = New-Object System.Drawing.Size(978, 80)
@@ -476,6 +519,31 @@ $btnTest.Add_Click({
     }
     catch {
         Write-Log -Box $logBox -Message "Test failed: $($_.Exception.Message)"
+    }
+})
+
+$btnContextLoaded.Add_Click({
+    try {
+        $aliasTarget = Get-TargetAlias
+        $contextTarget = Get-TargetContextLength
+        if ($contextTarget -le 0) {
+            throw 'Set Context > 0 to update a loaded alias.'
+        }
+
+        Write-Log -Box $logBox -Message "Updating loaded alias '$aliasTarget' to context=$contextTarget..."
+        $out = Reload-LoadedAliasContext -AliasToReload $aliasTarget -NewContextLength $contextTarget
+        if ($out.Trim()) {
+            foreach ($line in ($out -split "(`r`n|`n|`r)")) {
+                $trimmed = $line.Trim()
+                if ($trimmed) {
+                    Write-Log -Box $logBox -Message $trimmed
+                }
+            }
+        }
+        Write-Log -Box $logBox -Message "Done. Loaded alias '$aliasTarget' context set to $contextTarget."
+    }
+    catch {
+        Write-Log -Box $logBox -Message "Context update failed: $($_.Exception.Message)"
     }
 })
 
