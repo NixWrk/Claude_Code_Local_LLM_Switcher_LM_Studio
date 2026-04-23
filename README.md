@@ -80,7 +80,8 @@ This reset affects only the isolated local profile folder in this repository.
 2. Select a model in the table (`Model Key`, `Display Name`, `Publisher`, `Size (GiB)`, `Params`, `Arch`).
 3. Select alias:
    - default dropdown: `sonnet`, `opus`, `haiku`
-   - or enable `Custom alias` for custom names (for example `claude-opus-4-6`)
+   - or enable `Custom alias` for custom names (for example `claude-opus-4-7`)
+   - binding a short alias auto-syncs its canonical `claude-*` alias (for example `opus` + `claude-opus-4-7`)
 4. Set `Context`:
    - `0` = auto
    - `>0` = explicit `n_ctx` on load (for example `32768`)
@@ -94,7 +95,7 @@ Extra GUI features:
 - `Show Loaded Models`
   - prints loaded model instances and context
 - top status panel
-  - shows what is currently loaded for `sonnet`/`opus`/`haiku`
+  - shows what is currently loaded for short aliases and canonical `claude-*` aliases
 - table sorting
   - click any column header to sort
   - repeated click toggles ascending/descending (Explorer-style)
@@ -123,6 +124,12 @@ Update context for already loaded alias:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\lmstudio_alias_switcher_gui.ps1 -Headless -Alias sonnet -ContextLength 32768
+```
+
+Disable canonical alias auto-sync (optional):
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\lmstudio_alias_switcher_gui.ps1 -Headless -Alias sonnet -ModelKey "p6_google_gemma-4-e4b@q6_k" -DisableClaudeAliasSync
 ```
 
 ## Operational notes

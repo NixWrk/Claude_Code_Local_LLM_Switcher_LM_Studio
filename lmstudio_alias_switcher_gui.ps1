@@ -4,13 +4,17 @@ param(
     [string]$ModelKey,
     [int]$ContextLength = 0,
     [switch]$TestAlias,
-    [switch]$ShowLoaded
+    [switch]$ShowLoaded,
+    [switch]$DisableClaudeAliasSync
 )
 
 $ErrorActionPreference = 'Stop'
 if ($ContextLength -lt 0) {
     throw 'ContextLength must be >= 0.'
 }
+
+$script:ClaudeModelMapCache = $null
+$script:ClaudeModelMapError = $null
 
 function Normalize-LmsOutput {
     param([string]$Text)
@@ -112,6 +116,138 @@ function Get-LoadedLlmInstances {
     return @($loaded | Where-Object { $_.type -eq 'llm' })
 }
 
+function Get-ClaudeCliJsPath {
+    $candidates = @(
+        (Join-Path $env:APPDATA 'npm\node_modules\@anthropic-ai\claude-code\cli.js'),
+        (Join-Path $env:LOCALAPPDATA 'npm\node_modules\@anthropic-ai\claude-code\cli.js')
+    )
+
+    $claudeCmd = Get-Command claude.cmd -ErrorAction SilentlyContinue
+    if ($claudeCmd -and $claudeCmd.Source) {
+        $cmdDir = Split-Path -Parent $claudeCmd.Source
+        $candidates += (Join-Path $cmdDir 'node_modules\@anthropic-ai\claude-code\cli.js')
+    }
+
+    foreach ($path in $candidates | Select-Object -Unique) {
+        if ($path -and (Test-Path -LiteralPath $path)) {
+            return $path
+        }
+    }
+
+    return ''
+}
+
+function Get-LatestClaudeModelAliasForFamily {
+    param(
+        [Parameter(Mandatory = $true)][string]$CliContent,
+        [Parameter(Mandatory = $true)][string]$Family
+    )
+
+    $escapedFamily = [regex]::Escape($Family)
+    $tablePhraseByFamily = @{
+        'opus' = '"opus",\s*"most powerful"'
+        'sonnet' = '"sonnet",\s*"balanced"'
+        'haiku' = '"haiku",\s*"fast",\s*"cheap"'
+    }
+    if ($tablePhraseByFamily.ContainsKey($Family)) {
+        $tablePattern = $tablePhraseByFamily[$Family] + ".{0,500}?(claude-$escapedFamily-\d+(?:-\d+)?)"
+        $tableMatch = [regex]::Match($CliContent, $tablePattern, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+        if ($tableMatch.Success) {
+            return $tableMatch.Groups[1].Value.Trim()
+        }
+    }
+
+    $versionMatches = [regex]::Matches(
+        $CliContent,
+        "claude-$escapedFamily-(\d+)-(\d+)\b",
+        [System.Text.RegularExpressions.RegexOptions]::IgnoreCase
+    )
+
+    $bestMajor = -1
+    $bestMinor = -1
+    foreach ($m in $versionMatches) {
+        $major = [int]$m.Groups[1].Value
+        $minor = [int]$m.Groups[2].Value
+        if ($minor -gt 99) {
+            continue
+        }
+        if ($major -gt $bestMajor -or ($major -eq $bestMajor -and $minor -gt $bestMinor)) {
+            $bestMajor = $major
+            $bestMinor = $minor
+        }
+    }
+
+    if ($bestMajor -ge 0 -and $bestMinor -ge 0) {
+        return ("claude-{0}-{1}-{2}" -f $Family, $bestMajor, $bestMinor)
+    }
+
+    $singleVersionMatches = [regex]::Matches(
+        $CliContent,
+        "claude-$escapedFamily-(\d+)\b",
+        [System.Text.RegularExpressions.RegexOptions]::IgnoreCase
+    )
+    $bestSingleMajor = -1
+    foreach ($m in $singleVersionMatches) {
+        $major = [int]$m.Groups[1].Value
+        if ($major -gt $bestSingleMajor) {
+            $bestSingleMajor = $major
+        }
+    }
+    if ($bestSingleMajor -ge 0) {
+        return ("claude-{0}-{1}" -f $Family, $bestSingleMajor)
+    }
+
+    return ''
+}
+
+function Get-ClaudeModelMap {
+    if ($script:ClaudeModelMapCache) {
+        return $script:ClaudeModelMapCache
+    }
+
+    $map = @{}
+    try {
+        $cliJsPath = Get-ClaudeCliJsPath
+        if (-not $cliJsPath) {
+            $script:ClaudeModelMapError = 'Unable to locate @anthropic-ai/claude-code/cli.js.'
+            $script:ClaudeModelMapCache = $map
+            return $map
+        }
+
+        $content = Get-Content -LiteralPath $cliJsPath -Raw -ErrorAction Stop
+        foreach ($family in @('opus', 'sonnet', 'haiku')) {
+            $alias = Get-LatestClaudeModelAliasForFamily -CliContent $content -Family $family
+            if ($alias) {
+                $map[$family] = $alias
+            }
+        }
+    }
+    catch {
+        $script:ClaudeModelMapError = $_.Exception.Message
+    }
+
+    $script:ClaudeModelMapCache = $map
+    return $map
+}
+
+function Get-CanonicalAliasForShortAlias {
+    param([string]$AliasName)
+
+    if (-not $AliasName) {
+        return ''
+    }
+    $normalized = $AliasName.Trim().ToLowerInvariant()
+    if ($normalized -notin @('sonnet', 'opus', 'haiku')) {
+        return ''
+    }
+
+    $modelMap = Get-ClaudeModelMap
+    if ($modelMap.ContainsKey($normalized)) {
+        return [string]$modelMap[$normalized]
+    }
+    return ''
+}
+
 function Bind-ModelAlias {
     param(
         [Parameter(Mandatory = $true)][string]$BindAlias,
@@ -120,7 +256,9 @@ function Bind-ModelAlias {
     )
 
     $logParts = @()
-    $existing = Get-LoadedLlmInstances | Where-Object { $_.identifier -eq $BindAlias } | Select-Object -First 1
+    $loaded = Get-LoadedLlmInstances
+
+    $existing = $loaded | Where-Object { $_.identifier -eq $BindAlias } | Select-Object -First 1
     if ($existing) {
         $unloadOut = Run-LmsCommand -CommandArgs @('unload', $BindAlias)
         if ($unloadOut.Trim()) {
@@ -135,6 +273,29 @@ function Bind-ModelAlias {
     $loadOut = Run-LmsCommand -CommandArgs $loadArgs
     if ($loadOut.Trim()) {
         $logParts += $loadOut.Trim()
+    }
+
+    if (-not $DisableClaudeAliasSync) {
+        $canonicalAlias = Get-CanonicalAliasForShortAlias -AliasName $BindAlias
+        if ($canonicalAlias -and $canonicalAlias -ne $BindAlias) {
+            $canonicalLoaded = $loaded | Where-Object { $_.identifier -eq $canonicalAlias } | Select-Object -First 1
+            if ($canonicalLoaded) {
+                $canonicalUnloadOut = Run-LmsCommand -CommandArgs @('unload', $canonicalAlias)
+                if ($canonicalUnloadOut.Trim()) {
+                    $logParts += $canonicalUnloadOut.Trim()
+                }
+            }
+
+            $canonicalLoadArgs = @('load', $BindModelKey, '--identifier', $canonicalAlias, '-y')
+            if ($BindContextLength -gt 0) {
+                $canonicalLoadArgs += @('-c', "$BindContextLength")
+            }
+            $canonicalLoadOut = Run-LmsCommand -CommandArgs $canonicalLoadArgs
+            if ($canonicalLoadOut.Trim()) {
+                $logParts += $canonicalLoadOut.Trim()
+            }
+            $logParts += ("Auto-synced canonical alias '{0}' for '{1}'." -f $canonicalAlias, $BindAlias)
+        }
     }
 
     return ($logParts -join [Environment]::NewLine)
@@ -209,6 +370,16 @@ if ($Headless) {
                 Write-Output ("loaded: identifier='{0}', modelKey='{1}', status='{2}', parallel={3}, ctx={4}, maxCtx={5}" -f $m.identifier, $m.modelKey, $m.status, $m.parallel, $m.contextLength, $m.maxContextLength)
             }
         }
+
+        if (-not $DisableClaudeAliasSync) {
+            $modelMap = Get-ClaudeModelMap
+            if ($modelMap.Count -gt 0) {
+                Write-Output ("detected canonical aliases: sonnet='{0}', opus='{1}', haiku='{2}'" -f $modelMap['sonnet'], $modelMap['opus'], $modelMap['haiku'])
+            }
+            elseif ($script:ClaudeModelMapError) {
+                Write-Output ("canonical alias detection unavailable: {0}" -f $script:ClaudeModelMapError)
+            }
+        }
         $didAction = $true
     }
 
@@ -250,6 +421,7 @@ if ($Headless) {
         Write-Output 'Headless mode: no action requested.'
         Write-Output 'Example: -Headless -Alias sonnet -ModelKey mistralai/ministral-3-3b -ContextLength 32768 -TestAlias'
         Write-Output 'Context-only: -Headless -Alias sonnet -ContextLength 32768'
+        Write-Output 'Optional: -DisableClaudeAliasSync (skip auto-sync of canonical claude-* aliases).'
     }
 
     exit 0
@@ -274,7 +446,7 @@ $form.StartPosition = 'CenterScreen'
 $form.MinimumSize = New-Object System.Drawing.Size(980, 680)
 
 $lblInfo = New-Object System.Windows.Forms.Label
-$lblInfo.Text = 'Pick a local model and bind it to Claude alias (sonnet/opus/haiku/default). Context 0 = auto.'
+$lblInfo.Text = 'Pick a local model and bind it to Claude alias (sonnet/opus/haiku/default). Context 0 = auto. Short aliases auto-sync to canonical claude-* IDs.'
 $lblInfo.AutoSize = $true
 $lblInfo.Location = New-Object System.Drawing.Point(12, 12)
 $form.Controls.Add($lblInfo)
@@ -336,7 +508,7 @@ $lblContextHint.Location = New-Object System.Drawing.Point(750, 45)
 $form.Controls.Add($lblContextHint)
 
 $lblAliasStatus = New-Object System.Windows.Forms.Label
-$lblAliasStatus.Text = 'Loaded aliases (sonnet/opus/haiku):'
+$lblAliasStatus.Text = 'Loaded aliases (short + canonical):'
 $lblAliasStatus.AutoSize = $true
 $lblAliasStatus.Location = New-Object System.Drawing.Point(12, 78)
 $form.Controls.Add($lblAliasStatus)
@@ -471,6 +643,11 @@ function Refresh-AliasStatus {
     try {
         $loaded = Get-LoadedLlmInstances
         $lines = @()
+        $modelMap = @{}
+        if (-not $DisableClaudeAliasSync) {
+            $modelMap = Get-ClaudeModelMap
+        }
+
         foreach ($aliasName in @('sonnet', 'opus', 'haiku')) {
             $item = $loaded | Where-Object { $_.identifier -eq $aliasName } | Select-Object -First 1
             if ($item) {
@@ -478,6 +655,19 @@ function Refresh-AliasStatus {
             }
             else {
                 $lines += ("{0}: <not loaded>" -f $aliasName)
+            }
+
+            if ($modelMap.ContainsKey($aliasName)) {
+                $canonicalAlias = [string]$modelMap[$aliasName]
+                if ($canonicalAlias -and $canonicalAlias -ne $aliasName) {
+                    $canonicalItem = $loaded | Where-Object { $_.identifier -eq $canonicalAlias } | Select-Object -First 1
+                    if ($canonicalItem) {
+                        $lines += ("  -> {0}: {1} | ctx={2} | status={3}" -f $canonicalAlias, $canonicalItem.modelKey, $canonicalItem.contextLength, $canonicalItem.status)
+                    }
+                    else {
+                        $lines += ("  -> {0}: <not loaded>" -f $canonicalAlias)
+                    }
+                }
             }
         }
         $txtAliasStatus.Text = ($lines -join [Environment]::NewLine)
@@ -634,6 +824,15 @@ $btnContextLoaded.Add_Click({
 })
 
 Write-Log -Box $logBox -Message 'Ready. Make sure LM Studio server is running on http://localhost:1234.'
+if (-not $DisableClaudeAliasSync) {
+    $modelMap = Get-ClaudeModelMap
+    if ($modelMap.Count -gt 0) {
+        Write-Log -Box $logBox -Message ("Detected canonical aliases: sonnet='{0}', opus='{1}', haiku='{2}'." -f $modelMap['sonnet'], $modelMap['opus'], $modelMap['haiku'])
+    }
+    elseif ($script:ClaudeModelMapError) {
+        Write-Log -Box $logBox -Message ("Canonical alias detection unavailable: {0}" -f $script:ClaudeModelMapError)
+    }
+}
 Refresh-ModelList
 
 [void]$form.ShowDialog()
