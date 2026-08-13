@@ -1,0 +1,9 @@
+﻿# Authentication and local Codex state must never be committed.
+auth.json
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+sessions/
+logs/
+tmp/
+.tmp/
