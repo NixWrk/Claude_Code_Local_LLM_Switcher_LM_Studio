@@ -1,838 +1,339 @@
 param(
     [switch]$Headless,
-    [string]$Alias,
-    [string]$ModelKey,
-    [int]$ContextLength = 0,
-    [switch]$TestAlias,
-    [switch]$ShowLoaded,
-    [switch]$DisableClaudeAliasSync
+    [ValidateSet('LMStudio','Ollama','Anthropic','OpenAI')][string]$Backend = '',
+    [string]$BaseUrl = '', [string]$AuthToken = '', [string]$StateRoot = '',
+    [ValidateSet('sonnet','opus','haiku')][string]$Alias = 'sonnet',
+    [string]$ModelKey = '', [int]$ContextLength = 0,
+    [switch]$TestAlias, [switch]$TestTools, [switch]$ShowLoaded, [switch]$ListModels,
+    [switch]$UnloadAll, [switch]$ForceUnload,
+    [switch]$DisableClaudeAliasSync,
+    [string]$PreviewPath = '', [string]$PreviewModelsFile = ''
 )
-
-$ErrorActionPreference = 'Stop'
-if ($ContextLength -lt 0) {
-    throw 'ContextLength must be >= 0.'
-}
-
-$script:ClaudeModelMapCache = $null
-$script:ClaudeModelMapError = $null
-
-function Normalize-LmsOutput {
-    param([string]$Text)
-
-    if (-not $Text) {
-        return ''
-    }
-
-    $clean = $Text -replace "`0", ''
-    $esc = [char]27
-    $clean = [regex]::Replace($clean, "$([regex]::Escape($esc))\[[0-9;?]*[ -/]*[@-~]", '')
-
-    $lines = @()
-    foreach ($rawLine in ($clean -split "(`r`n|`n|`r)")) {
-        $line = $rawLine.Trim()
-        if (-not $line) { continue }
-        if ($line -match '^\[\?25[hl]$') { continue }
-        if ($line -match '^Loading\s+') { continue }
-        if ($line -match '\[CliPref\] Error writing data to file') { continue }
-        $lines += $line
-    }
-
-    if ($lines.Count -eq 0) {
-        return ''
-    }
-
-    return ($lines -join [Environment]::NewLine).Trim()
-}
-
-function Run-LmsCommand {
-    param(
-        [string[]]$CommandArgs,
-        [switch]$JsonMode
-    )
-
-    $cmd = Get-Command lms -ErrorAction SilentlyContinue
-    if (-not $cmd) {
-        throw 'LM Studio CLI (lms) was not found in PATH. Install/enable LM Studio CLI first.'
-    }
-    if (-not $CommandArgs -or $CommandArgs.Count -eq 0) {
-        throw 'No lms arguments provided.'
-    }
-
-    $stdoutPath = [System.IO.Path]::GetTempFileName()
-    $stderrPath = [System.IO.Path]::GetTempFileName()
-    $stdout = ''
-    $stderr = ''
-    try {
-        $proc = Start-Process -FilePath $cmd.Source -ArgumentList $CommandArgs -NoNewWindow -Wait -PassThru -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
-        if (Test-Path $stdoutPath) {
-            $stdout = Get-Content -Path $stdoutPath -Raw -ErrorAction SilentlyContinue
-        }
-        if (Test-Path $stderrPath) {
-            $stderr = Get-Content -Path $stderrPath -Raw -ErrorAction SilentlyContinue
-        }
-        $exitCode = $proc.ExitCode
-    }
-    finally {
-        if (Test-Path $stdoutPath) {
-            Remove-Item -LiteralPath $stdoutPath -Force -ErrorAction SilentlyContinue
-        }
-        if (Test-Path $stderrPath) {
-            Remove-Item -LiteralPath $stderrPath -Force -ErrorAction SilentlyContinue
-        }
-    }
-
-    $combined = ($stdout, $stderr -join [Environment]::NewLine)
-    $normalized = Normalize-LmsOutput -Text $combined
-    $jsonPayload = if ($stdout) { $stdout.Trim() } else { '' }
-
-    if ($exitCode -ne 0) {
-        throw "lms command failed (exit $exitCode): lms $($CommandArgs -join ' ')`n$normalized"
-    }
-
-    if ($JsonMode) {
-        return $jsonPayload
-    }
-    return $normalized
-}
-
-function Get-LmsJson {
-    param([string[]]$CommandArgs)
-
-    $raw = Run-LmsCommand -CommandArgs $CommandArgs -JsonMode
-    if (-not $raw.Trim()) {
-        return @()
-    }
-
-    try {
-        return ($raw | ConvertFrom-Json)
-    }
-    catch {
-        throw "Failed to parse JSON from: lms $($CommandArgs -join ' ')`nRaw output:`n$raw"
-    }
-}
-
-function Get-LoadedLlmInstances {
-    $loaded = Get-LmsJson -CommandArgs @('ps', '--json')
-    return @($loaded | Where-Object { $_.type -eq 'llm' })
-}
-
-function Get-ClaudeCliJsPath {
-    $candidates = @(
-        (Join-Path $env:APPDATA 'npm\node_modules\@anthropic-ai\claude-code\cli.js'),
-        (Join-Path $env:LOCALAPPDATA 'npm\node_modules\@anthropic-ai\claude-code\cli.js')
-    )
-
-    $claudeCmd = Get-Command claude.cmd -ErrorAction SilentlyContinue
-    if ($claudeCmd -and $claudeCmd.Source) {
-        $cmdDir = Split-Path -Parent $claudeCmd.Source
-        $candidates += (Join-Path $cmdDir 'node_modules\@anthropic-ai\claude-code\cli.js')
-    }
-
-    foreach ($path in $candidates | Select-Object -Unique) {
-        if ($path -and (Test-Path -LiteralPath $path)) {
-            return $path
-        }
-    }
-
-    return ''
-}
-
-function Get-LatestClaudeModelAliasForFamily {
-    param(
-        [Parameter(Mandatory = $true)][string]$CliContent,
-        [Parameter(Mandatory = $true)][string]$Family
-    )
-
-    $escapedFamily = [regex]::Escape($Family)
-    $tablePhraseByFamily = @{
-        'opus' = '"opus",\s*"most powerful"'
-        'sonnet' = '"sonnet",\s*"balanced"'
-        'haiku' = '"haiku",\s*"fast",\s*"cheap"'
-    }
-    if ($tablePhraseByFamily.ContainsKey($Family)) {
-        $tablePattern = $tablePhraseByFamily[$Family] + ".{0,500}?(claude-$escapedFamily-\d+(?:-\d+)?)"
-        $tableMatch = [regex]::Match($CliContent, $tablePattern, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
-        if ($tableMatch.Success) {
-            return $tableMatch.Groups[1].Value.Trim()
-        }
-    }
-
-    $versionMatches = [regex]::Matches(
-        $CliContent,
-        "claude-$escapedFamily-(\d+)-(\d+)\b",
-        [System.Text.RegularExpressions.RegexOptions]::IgnoreCase
-    )
-
-    $bestMajor = -1
-    $bestMinor = -1
-    foreach ($m in $versionMatches) {
-        $major = [int]$m.Groups[1].Value
-        $minor = [int]$m.Groups[2].Value
-        if ($minor -gt 99) {
-            continue
-        }
-        if ($major -gt $bestMajor -or ($major -eq $bestMajor -and $minor -gt $bestMinor)) {
-            $bestMajor = $major
-            $bestMinor = $minor
-        }
-    }
-
-    if ($bestMajor -ge 0 -and $bestMinor -ge 0) {
-        return ("claude-{0}-{1}-{2}" -f $Family, $bestMajor, $bestMinor)
-    }
-
-    $singleVersionMatches = [regex]::Matches(
-        $CliContent,
-        "claude-$escapedFamily-(\d+)\b",
-        [System.Text.RegularExpressions.RegexOptions]::IgnoreCase
-    )
-    $bestSingleMajor = -1
-    foreach ($m in $singleVersionMatches) {
-        $major = [int]$m.Groups[1].Value
-        if ($major -gt $bestSingleMajor) {
-            $bestSingleMajor = $major
-        }
-    }
-    if ($bestSingleMajor -ge 0) {
-        return ("claude-{0}-{1}" -f $Family, $bestSingleMajor)
-    }
-
-    return ''
-}
-
-function Get-ClaudeModelMap {
-    if ($script:ClaudeModelMapCache) {
-        return $script:ClaudeModelMapCache
-    }
-
-    $map = @{}
-    try {
-        $cliJsPath = Get-ClaudeCliJsPath
-        if (-not $cliJsPath) {
-            $script:ClaudeModelMapError = 'Unable to locate @anthropic-ai/claude-code/cli.js.'
-            $script:ClaudeModelMapCache = $map
-            return $map
-        }
-
-        $content = Get-Content -LiteralPath $cliJsPath -Raw -ErrorAction Stop
-        foreach ($family in @('opus', 'sonnet', 'haiku')) {
-            $alias = Get-LatestClaudeModelAliasForFamily -CliContent $content -Family $family
-            if ($alias) {
-                $map[$family] = $alias
-            }
-        }
-    }
-    catch {
-        $script:ClaudeModelMapError = $_.Exception.Message
-    }
-
-    $script:ClaudeModelMapCache = $map
-    return $map
-}
-
-function Get-CanonicalAliasForShortAlias {
-    param([string]$AliasName)
-
-    if (-not $AliasName) {
-        return ''
-    }
-    $normalized = $AliasName.Trim().ToLowerInvariant()
-    if ($normalized -notin @('sonnet', 'opus', 'haiku')) {
-        return ''
-    }
-
-    $modelMap = Get-ClaudeModelMap
-    if ($modelMap.ContainsKey($normalized)) {
-        return [string]$modelMap[$normalized]
-    }
-    return ''
-}
-
-function Bind-ModelAlias {
-    param(
-        [Parameter(Mandatory = $true)][string]$BindAlias,
-        [Parameter(Mandatory = $true)][string]$BindModelKey,
-        [int]$BindContextLength = 0
-    )
-
-    $logParts = @()
-    $loaded = Get-LoadedLlmInstances
-
-    $existing = $loaded | Where-Object { $_.identifier -eq $BindAlias } | Select-Object -First 1
-    if ($existing) {
-        $unloadOut = Run-LmsCommand -CommandArgs @('unload', $BindAlias)
-        if ($unloadOut.Trim()) {
-            $logParts += $unloadOut.Trim()
-        }
-    }
-
-    $loadArgs = @('load', $BindModelKey, '--identifier', $BindAlias, '-y')
-    if ($BindContextLength -gt 0) {
-        $loadArgs += @('-c', "$BindContextLength")
-    }
-    $loadOut = Run-LmsCommand -CommandArgs $loadArgs
-    if ($loadOut.Trim()) {
-        $logParts += $loadOut.Trim()
-    }
-
-    if (-not $DisableClaudeAliasSync) {
-        $canonicalAlias = Get-CanonicalAliasForShortAlias -AliasName $BindAlias
-        if ($canonicalAlias -and $canonicalAlias -ne $BindAlias) {
-            $canonicalLoaded = $loaded | Where-Object { $_.identifier -eq $canonicalAlias } | Select-Object -First 1
-            if ($canonicalLoaded) {
-                $canonicalUnloadOut = Run-LmsCommand -CommandArgs @('unload', $canonicalAlias)
-                if ($canonicalUnloadOut.Trim()) {
-                    $logParts += $canonicalUnloadOut.Trim()
-                }
-            }
-
-            $canonicalLoadArgs = @('load', $BindModelKey, '--identifier', $canonicalAlias, '-y')
-            if ($BindContextLength -gt 0) {
-                $canonicalLoadArgs += @('-c', "$BindContextLength")
-            }
-            $canonicalLoadOut = Run-LmsCommand -CommandArgs $canonicalLoadArgs
-            if ($canonicalLoadOut.Trim()) {
-                $logParts += $canonicalLoadOut.Trim()
-            }
-            $logParts += ("Auto-synced canonical alias '{0}' for '{1}'." -f $canonicalAlias, $BindAlias)
-        }
-    }
-
-    return ($logParts -join [Environment]::NewLine)
-}
-
-function Reload-LoadedAliasContext {
-    param(
-        [Parameter(Mandatory = $true)][string]$AliasToReload,
-        [Parameter(Mandatory = $true)][int]$NewContextLength
-    )
-
-    if ($NewContextLength -le 0) {
-        throw 'NewContextLength must be > 0 for loaded alias context update.'
-    }
-
-    $existing = Get-LoadedLlmInstances | Where-Object { $_.identifier -eq $AliasToReload } | Select-Object -First 1
-    if (-not $existing) {
-        throw "Alias '$AliasToReload' is not loaded. Use Bind first, then update context."
-    }
-
-    if ($existing.contextLength -eq $NewContextLength) {
-        return "Alias '$AliasToReload' already has ctx=$NewContextLength. No reload needed."
-    }
-
-    return (Bind-ModelAlias -BindAlias $AliasToReload -BindModelKey ([string]$existing.modelKey) -BindContextLength $NewContextLength)
-}
-
-function Test-AnthropicEndpoint {
-    param([Parameter(Mandatory = $true)][string]$AliasToTest)
-
-    $url = 'http://localhost:1234/v1/messages'
-    $headers = @{
-        'x-api-key' = 'lmstudio'
-        'anthropic-version' = '2023-06-01'
-        'Content-Type' = 'application/json'
-    }
-    $bodyObject = @{
-        model = $AliasToTest
-        max_tokens = 8
-        messages = @(
-            @{ role = 'user'; content = 'Reply with OK only.' }
-        )
-    }
-
-    $body = $bodyObject | ConvertTo-Json -Depth 8
-    $sw = [System.Diagnostics.Stopwatch]::StartNew()
-    try {
-        $resp = Invoke-WebRequest -UseBasicParsing -Uri $url -Method Post -Headers $headers -Body $body -TimeoutSec 30
-        $sw.Stop()
-        return "Endpoint test OK: HTTP $($resp.StatusCode), $($sw.ElapsedMilliseconds) ms"
-    }
-    catch {
-        $sw.Stop()
-        if ($_.Exception.Response) {
-            $resp = $_.Exception.Response
-            return "Endpoint test failed: HTTP $([int]$resp.StatusCode), $($sw.ElapsedMilliseconds) ms"
-        }
-        return "Endpoint test failed: $($_.Exception.Message)"
-    }
-}
+$ErrorActionPreference='Stop'
+. (Join-Path $PSScriptRoot 'local_switcher_core.ps1')
+$paths=Get-StatePaths $StateRoot
+$config=Get-SwitcherConfig $StateRoot
+$provider=$config.provider
+if ($Backend) {$provider=New-Provider $Backend $BaseUrl $AuthToken}
+elseif ($BaseUrl -or $AuthToken) {throw 'Specify -Backend with endpoint/token overrides.'}
+if ($ContextLength -lt 0) {throw 'ContextLength must be >= 0.'}
 
 if ($Headless) {
-    $didAction = $false
-
-    if ($ShowLoaded) {
-        $instances = Get-LoadedLlmInstances
-        if ($instances.Count -eq 0) {
-            Write-Output 'No loaded LLM instances.'
+    try {
+        if ($UnloadAll -or $ForceUnload) {Unload-AllModels $provider -Force:$ForceUnload;exit 0}
+        if ($ListModels -or $ShowLoaded) {
+            if ($ShowLoaded -and $provider.Kind -eq 'Ollama') {Invoke-Backend $provider '/api/ps' | ConvertTo-Json -Depth 20}
+            elseif ($ShowLoaded -and $provider.Kind -eq 'LMStudio') {
+                $instances=@(Get-ProviderModels $provider | ForEach-Object {$_.Instances})
+                ConvertTo-Json -InputObject $instances -Depth 20
+            } elseif ($ShowLoaded) {throw 'This connector cannot report loaded instances. Use -ListModels for the catalog.'}
+            else {Get-SortedModels @(Get-ProviderModels $provider) | ConvertTo-Json -Depth 20}
         }
-        else {
-            foreach ($m in $instances) {
-                Write-Output ("loaded: identifier='{0}', modelKey='{1}', status='{2}', parallel={3}, ctx={4}, maxCtx={5}" -f $m.identifier, $m.modelKey, $m.status, $m.parallel, $m.contextLength, $m.maxContextLength)
-            }
+        if (-not $ModelKey -and $ContextLength -gt 0) {
+            $binding=Get-Field $config.bindings $Alias
+            if (-not $binding) {throw 'Bind this alias before updating context.'}
+            $ModelKey=$binding.ModelKey
         }
-
-        if (-not $DisableClaudeAliasSync) {
-            $modelMap = Get-ClaudeModelMap
-            if ($modelMap.Count -gt 0) {
-                Write-Output ("detected canonical aliases: sonnet='{0}', opus='{1}', haiku='{2}'" -f $modelMap['sonnet'], $modelMap['opus'], $modelMap['haiku'])
-            }
-            elseif ($script:ClaudeModelMapError) {
-                Write-Output ("canonical alias detection unavailable: {0}" -f $script:ClaudeModelMapError)
-            }
+        if ($ModelKey) {Set-ModelBinding $paths.Root $provider $Alias $ModelKey $ContextLength}
+        if ($TestAlias -or $TestTools) {
+            $current=Get-SwitcherConfig $paths.Root
+            $binding=Get-Field $current.bindings $Alias
+            if (-not $binding) {throw 'No saved binding for this alias.'}
+            Test-ModelEndpoint $current.provider $binding.ModelId -Tools:$TestTools
         }
-        $didAction = $true
-    }
-
-    if ($Alias -and $ModelKey) {
-        Write-Output "Binding alias '$Alias' -> '$ModelKey'..."
-        if ($ContextLength -gt 0) {
-            Write-Output "Requested context length: $ContextLength"
-        }
-        $bindOutput = Bind-ModelAlias -BindAlias $Alias -BindModelKey $ModelKey -BindContextLength $ContextLength
-        if ($bindOutput.Trim()) {
-            Write-Output $bindOutput.Trim()
-        }
-        Write-Output "Done. Alias '$Alias' now points to '$ModelKey'."
-        $didAction = $true
-    }
-    elseif ($Alias -and $ContextLength -gt 0) {
-        Write-Output "Updating context for loaded alias '$Alias' to $ContextLength..."
-        $reloadOutput = Reload-LoadedAliasContext -AliasToReload $Alias -NewContextLength $ContextLength
-        if ($reloadOutput.Trim()) {
-            Write-Output $reloadOutput.Trim()
-        }
-        Write-Output "Done. Alias '$Alias' context updated to $ContextLength."
-        $didAction = $true
-    }
-    elseif ($ModelKey -and -not $Alias) {
-        throw 'For headless binding, provide both -Alias and -ModelKey.'
-    }
-
-    if ($TestAlias) {
-        if (-not $Alias) {
-            throw 'Use -Alias <name> together with -TestAlias.'
-        }
-        $testResult = Test-AnthropicEndpoint -AliasToTest $Alias
-        Write-Output $testResult
-        $didAction = $true
-    }
-
-    if (-not $didAction) {
-        Write-Output 'Headless mode: no action requested.'
-        Write-Output 'Example: -Headless -Alias sonnet -ModelKey mistralai/ministral-3-3b -ContextLength 32768 -TestAlias'
-        Write-Output 'Context-only: -Headless -Alias sonnet -ContextLength 32768'
-        Write-Output 'Optional: -DisableClaudeAliasSync (skip auto-sync of canonical claude-* aliases).'
-    }
-
-    exit 0
+        if (-not ($ListModels -or $ShowLoaded -or $ModelKey -or $TestAlias -or $TestTools)) {Write-Output 'Use -ListModels, -ShowLoaded, -Alias sonnet -ModelKey <installed-model>, -TestAlias or -TestTools.'}
+        exit 0
+    } catch {Write-Error $_ -ErrorAction Continue; exit 1}
 }
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
+[Windows.Forms.Application]::EnableVisualStyles()
+$form=New-Object Windows.Forms.Form
+$form.Text='Claude Code - Local Models / Account B'
+$form.ClientSize=New-Object Drawing.Size(1080,760)
+$form.MinimumSize=New-Object Drawing.Size(1020,760)
+$form.StartPosition='CenterScreen'
+$form.Font=New-Object Drawing.Font('Segoe UI',10)
+$layout=New-Object Windows.Forms.TableLayoutPanel
+$layout.Dock='Fill'; $layout.Padding=New-Object Windows.Forms.Padding(16)
+$layout.ColumnCount=1; $layout.RowCount=8
+foreach ($height in @(44,42,44,80,52,40)) {[void]$layout.RowStyles.Add((New-Object Windows.Forms.RowStyle('Absolute',$height)))}
+[void]$layout.RowStyles.Add((New-Object Windows.Forms.RowStyle('Percent',100)))
+[void]$layout.RowStyles.Add((New-Object Windows.Forms.RowStyle('Absolute',110)))
+$form.Controls.Add($layout)
 
-function Write-Log {
-    param(
-        [System.Windows.Forms.TextBox]$Box,
-        [string]$Message
-    )
-    $timestamp = Get-Date -Format 'HH:mm:ss'
-    $Box.AppendText("[$timestamp] $Message`r`n")
+function New-Row {
+    param([int]$Row)
+    $panel=New-Object Windows.Forms.FlowLayoutPanel
+    $panel.Dock='Fill'; $panel.WrapContents=$false
+    $layout.Controls.Add($panel,0,$Row)
+    return $panel
+}
+function New-Label {
+    param($Panel,[string]$Text)
+    $label=New-Object Windows.Forms.Label
+    $label.Text=$Text; $label.AutoSize=$true; $label.Margin=New-Object Windows.Forms.Padding(0,7,8,0)
+    $Panel.Controls.Add($label); return $label
+}
+function New-Button {
+    param($Panel,[string]$Text,[int]$Width=150)
+    $button=New-Object Windows.Forms.Button
+    $button.Text=$Text; $button.Size=New-Object Drawing.Size($Width,32)
+    $button.Margin=New-Object Windows.Forms.Padding(0,0,8,0)
+    $Panel.Controls.Add($button); return $button
+}
+function New-TextBox {
+    param($Panel,[int]$Width)
+    $box=New-Object Windows.Forms.TextBox
+    $box.Width=$Width; $box.Margin=New-Object Windows.Forms.Padding(0,3,8,0)
+    $Panel.Controls.Add($box); return $box
 }
 
-$form = New-Object System.Windows.Forms.Form
-$form.Text = 'Claude Code Local LLM Switcher (LM Studio)'
-$form.Size = New-Object System.Drawing.Size(1020, 740)
-$form.StartPosition = 'CenterScreen'
-$form.MinimumSize = New-Object System.Drawing.Size(980, 680)
+$title=New-Object Windows.Forms.Label
+$title.Text='Local models, separate projects and chats'
+$title.Font=New-Object Drawing.Font('Segoe UI',16,[Drawing.FontStyle]::Bold)
+$title.Dock='Fill'; $layout.Controls.Add($title,0,0)
+$connectionRow=New-Row 1
+[void](New-Label $connectionRow 'Server')
+$backendBox=New-Object Windows.Forms.ComboBox
+$backendBox.DropDownStyle='DropDownList'; $backendBox.Width=140
+[void]$backendBox.Items.AddRange(@('LMStudio','Ollama','Anthropic','OpenAI'))
+$backendBox.SelectedItem=$provider.Kind; $connectionRow.Controls.Add($backendBox)
+$endpointBox=New-TextBox $connectionRow 270; $endpointBox.Text=$provider.BaseUrl
+[void](New-Label $connectionRow 'Token')
+$tokenBox=New-TextBox $connectionRow 140; $tokenBox.UseSystemPasswordChar=$true
+$tokenBox.AccessibleName='Backend API token (blank keeps the saved token for this endpoint)'
+$saveServerButton=New-Button $connectionRow 'Save server' 115
+$refreshButton=New-Button $connectionRow 'Refresh models' 145
 
-$lblInfo = New-Object System.Windows.Forms.Label
-$lblInfo.Text = 'Pick a local model and bind it to Claude alias (sonnet/opus/haiku/default). Context 0 = auto. Short aliases auto-sync to canonical claude-* IDs.'
-$lblInfo.AutoSize = $true
-$lblInfo.Location = New-Object System.Drawing.Point(12, 12)
-$form.Controls.Add($lblInfo)
+$projectRow=New-Row 2
+[void](New-Label $projectRow 'Project')
+$projectBox=New-Object Windows.Forms.ComboBox
+$projectBox.DropDownStyle='DropDownList'; $projectBox.Width=400; $projectRow.Controls.Add($projectBox)
+foreach ($project in @($config.projects)) {[void]$projectBox.Items.Add($project)}
+if ($projectBox.Items.Count) {$projectBox.SelectedIndex=0}
+$addProjectButton=New-Button $projectRow 'Add project' 125
+$launchButton=New-Button $projectRow 'Open local VS Code' 175
+$loginButton=New-Button $projectRow 'Sign in account B' 170
 
-$lblAlias = New-Object System.Windows.Forms.Label
-$lblAlias.Text = 'Alias:'
-$lblAlias.AutoSize = $true
-$lblAlias.Location = New-Object System.Drawing.Point(12, 45)
-$form.Controls.Add($lblAlias)
+$bindingRow=New-Row 3
+[void](New-Label $bindingRow 'Claude alias')
+$aliasBox=New-Object Windows.Forms.ComboBox
+$aliasBox.DropDownStyle='DropDownList'; $aliasBox.Width=95; [void]$aliasBox.Items.AddRange(@('sonnet','opus','haiku'))
+$aliasBox.SelectedIndex=0; $bindingRow.Controls.Add($aliasBox)
+[void](New-Label $bindingRow 'Context (0 = server default)')
+$contextBox=New-Object Windows.Forms.NumericUpDown
+$contextBox.Minimum=0; $contextBox.Maximum=1048576; $contextBox.Increment=1024; $contextBox.ThousandsSeparator=$true
+$contextBox.Width=120; $bindingRow.Controls.Add($contextBox)
+$bindButton=New-Button $bindingRow 'Use selected model' 180
+$testButton=New-Button $bindingRow 'Test response' 145
+$toolsButton=New-Button $bindingRow 'Test tools' 120
+$bindingRow.WrapContents=$true
+$unloadButton=New-Button $bindingRow 'Unload all models' 180
+$unloadButton.AccessibleDescription='Unload models from the selected server; if it is unresponsive, stop its process tree.'
+[void](New-Label $bindingRow 'If the server hangs, this also stops its processes.')
 
-$cmbAlias = New-Object System.Windows.Forms.ComboBox
-$cmbAlias.DropDownStyle = 'DropDownList'
-$cmbAlias.Location = New-Object System.Drawing.Point(60, 40)
-$cmbAlias.Size = New-Object System.Drawing.Size(220, 24)
-@(
-    'sonnet',
-    'opus',
-    'haiku'
-) | ForEach-Object { [void]$cmbAlias.Items.Add($_) }
-$cmbAlias.SelectedIndex = 0
-$form.Controls.Add($cmbAlias)
+$statusBox=New-Object Windows.Forms.TextBox
+$statusBox.Multiline=$true; $statusBox.ReadOnly=$true; $statusBox.Dock='Fill'; $statusBox.ScrollBars='Vertical'
+$layout.Controls.Add($statusBox,0,4)
+$filterRow=New-Row 5
+[void](New-Label $filterRow 'Filter')
+$filterBox=New-TextBox $filterRow 320
+$sortHint=New-Label $filterRow 'Largest models first. Click a column to change order.'
+$ollamaButton=New-Button $filterRow 'Get Ollama' 120
+$lmButton=New-Button $filterRow 'Get LM Studio' 140
 
-$chkCustomAlias = New-Object System.Windows.Forms.CheckBox
-$chkCustomAlias.Text = 'Custom alias'
-$chkCustomAlias.AutoSize = $true
-$chkCustomAlias.Location = New-Object System.Drawing.Point(290, 43)
-$form.Controls.Add($chkCustomAlias)
+$list=New-Object Windows.Forms.ListView
+$list.Dock='Fill'; $list.View='Details'; $list.FullRowSelect=$true; $list.MultiSelect=$false
+$list.HideSelection=$false; $list.GridLines=$true; $list.ShowItemToolTips=$true
+$emptyLabel=New-Object Windows.Forms.Label
+$emptyLabel.Text="No local models listed.`r`nStart a server, then click Refresh models."
+$emptyLabel.TextAlign='MiddleCenter';$emptyLabel.Dock='Fill';$emptyLabel.BackColor=[Drawing.SystemColors]::Window
+$list.Controls.Add($emptyLabel)
+$headers=@('Model key','Name','Publisher','Size (GiB)','Parameters','Architecture')
+$widths=@(290,230,110,120,110,110)
+for ($i=0;$i -lt $headers.Count;$i++) {[void]$list.Columns.Add($headers[$i],$widths[$i])}
+$layout.Controls.Add($list,0,6)
+$log=New-Object Windows.Forms.TextBox
+$log.Multiline=$true; $log.ReadOnly=$true; $log.Dock='Fill'; $log.ScrollBars='Vertical'
+$layout.Controls.Add($log,0,7)
 
-$txtCustomAlias = New-Object System.Windows.Forms.TextBox
-$txtCustomAlias.Location = New-Object System.Drawing.Point(390, 40)
-$txtCustomAlias.Size = New-Object System.Drawing.Size(180, 24)
-$txtCustomAlias.Enabled = $false
-$form.Controls.Add($txtCustomAlias)
+$script:models=@(); $script:column=3; $script:descending=$true; $script:lastClick=-1
+$script:worker=$null; $script:pending=$null; $script:operation=''
+$script:unloadWorker=$null; $script:unloadPending=$null
+$script:activeProvider=$provider
+$script:busyControls=@($backendBox,$endpointBox,$tokenBox,$saveServerButton,$refreshButton,$aliasBox,$contextBox,$bindButton,$testButton,$toolsButton,$launchButton,$loginButton,$addProjectButton,$projectBox)
 
-$chkCustomAlias.Add_CheckedChanged({
-    $txtCustomAlias.Enabled = $chkCustomAlias.Checked
-})
-
-$lblContext = New-Object System.Windows.Forms.Label
-$lblContext.Text = 'Context:'
-$lblContext.AutoSize = $true
-$lblContext.Location = New-Object System.Drawing.Point(580, 45)
-$form.Controls.Add($lblContext)
-
-$numContext = New-Object System.Windows.Forms.NumericUpDown
-$numContext.Location = New-Object System.Drawing.Point(640, 40)
-$numContext.Size = New-Object System.Drawing.Size(100, 24)
-$numContext.Minimum = 0
-$numContext.Maximum = 1048576
-$numContext.Increment = 1024
-$numContext.Value = 0
-$numContext.ThousandsSeparator = $true
-$form.Controls.Add($numContext)
-
-$lblContextHint = New-Object System.Windows.Forms.Label
-$lblContextHint.Text = '0 = auto'
-$lblContextHint.AutoSize = $true
-$lblContextHint.Location = New-Object System.Drawing.Point(750, 45)
-$form.Controls.Add($lblContextHint)
-
-$lblAliasStatus = New-Object System.Windows.Forms.Label
-$lblAliasStatus.Text = 'Loaded aliases (short + canonical):'
-$lblAliasStatus.AutoSize = $true
-$lblAliasStatus.Location = New-Object System.Drawing.Point(12, 78)
-$form.Controls.Add($lblAliasStatus)
-
-$txtAliasStatus = New-Object System.Windows.Forms.TextBox
-$txtAliasStatus.Location = New-Object System.Drawing.Point(12, 98)
-$txtAliasStatus.Size = New-Object System.Drawing.Size(978, 54)
-$txtAliasStatus.Multiline = $true
-$txtAliasStatus.ReadOnly = $true
-$txtAliasStatus.ScrollBars = 'Vertical'
-$form.Controls.Add($txtAliasStatus)
-
-$lblFilter = New-Object System.Windows.Forms.Label
-$lblFilter.Text = 'Filter:'
-$lblFilter.AutoSize = $true
-$lblFilter.Location = New-Object System.Drawing.Point(12, 162)
-$form.Controls.Add($lblFilter)
-
-$txtFilter = New-Object System.Windows.Forms.TextBox
-$txtFilter.Location = New-Object System.Drawing.Point(60, 158)
-$txtFilter.Size = New-Object System.Drawing.Size(590, 24)
-$form.Controls.Add($txtFilter)
-
-$btnRefresh = New-Object System.Windows.Forms.Button
-$btnRefresh.Text = 'Refresh Models'
-$btnRefresh.Location = New-Object System.Drawing.Point(660, 156)
-$btnRefresh.Size = New-Object System.Drawing.Size(170, 28)
-$form.Controls.Add($btnRefresh)
-
-$listView = New-Object System.Windows.Forms.ListView
-$listView.Location = New-Object System.Drawing.Point(12, 194)
-$listView.Size = New-Object System.Drawing.Size(978, 344)
-$listView.View = 'Details'
-$listView.FullRowSelect = $true
-$listView.MultiSelect = $false
-$listView.GridLines = $true
-[void]$listView.Columns.Add('Model Key', 350)
-[void]$listView.Columns.Add('Display Name', 200)
-[void]$listView.Columns.Add('Publisher', 120)
-[void]$listView.Columns.Add('Size (GiB)', 90)
-[void]$listView.Columns.Add('Params', 70)
-[void]$listView.Columns.Add('Arch', 120)
-$form.Controls.Add($listView)
-
-$btnBind = New-Object System.Windows.Forms.Button
-$btnBind.Text = 'Bind Alias To Selected Model'
-$btnBind.Location = New-Object System.Drawing.Point(12, 550)
-$btnBind.Size = New-Object System.Drawing.Size(290, 34)
-$form.Controls.Add($btnBind)
-
-$btnShowLoaded = New-Object System.Windows.Forms.Button
-$btnShowLoaded.Text = 'Show Loaded Models'
-$btnShowLoaded.Location = New-Object System.Drawing.Point(315, 550)
-$btnShowLoaded.Size = New-Object System.Drawing.Size(190, 34)
-$form.Controls.Add($btnShowLoaded)
-
-$btnTest = New-Object System.Windows.Forms.Button
-$btnTest.Text = 'Test /v1/messages with Alias'
-$btnTest.Location = New-Object System.Drawing.Point(520, 550)
-$btnTest.Size = New-Object System.Drawing.Size(240, 34)
-$form.Controls.Add($btnTest)
-
-$btnContextLoaded = New-Object System.Windows.Forms.Button
-$btnContextLoaded.Text = 'Set Context For Loaded Alias'
-$btnContextLoaded.Location = New-Object System.Drawing.Point(770, 550)
-$btnContextLoaded.Size = New-Object System.Drawing.Size(220, 34)
-$form.Controls.Add($btnContextLoaded)
-
-$logBox = New-Object System.Windows.Forms.TextBox
-$logBox.Location = New-Object System.Drawing.Point(12, 592)
-$logBox.Size = New-Object System.Drawing.Size(978, 80)
-$logBox.Multiline = $true
-$logBox.ScrollBars = 'Vertical'
-$logBox.ReadOnly = $true
-$form.Controls.Add($logBox)
-
-$script:AllModels = @()
-$script:SortColumn = 0
-$script:SortDescending = $false
-
-function Get-TargetAlias {
-    if ($chkCustomAlias.Checked) {
-        $custom = $txtCustomAlias.Text.Trim()
-        if (-not $custom) {
-            throw 'Custom alias is empty.'
-        }
-        return $custom
+function Write-GuiLog {param([string]$Message); $log.AppendText(('[' + (Get-Date -Format 'HH:mm:ss') + '] ' + $Message + "`r`n"))}
+function Update-BindingStatus {
+    $saved=Get-SwitcherConfig $paths.Root
+    $lines=@("Saved backend: $($saved.provider.Kind) | $($saved.provider.BaseUrl) | Account B: separate sign-in (not verified by this switcher)")
+    foreach ($name in @('sonnet','opus','haiku')) {
+        $binding=Get-Field $saved.bindings $name
+        if ($binding) {$lines += "$name -> $($binding.ModelId) | context=$($binding.ContextLength)"}
     }
-    return [string]$cmbAlias.SelectedItem
+    $statusBox.Text=$lines -join "`r`n"
 }
-
-function Get-TargetContextLength {
-    return [int]$numContext.Value
-}
-
-function Get-ModelNumericParamValue {
-    param([string]$ParamString)
-
-    if (-not $ParamString) {
-        return -1.0
-    }
-    $m = [regex]::Match($ParamString, '([0-9]+(?:\.[0-9]+)?)')
-    if ($m.Success) {
-        return [double]$m.Groups[1].Value
-    }
-    return -1.0
-}
-
-function Get-SortKey {
-    param(
-        $Model,
-        [int]$ColumnIndex
-    )
-
-    switch ($ColumnIndex) {
-        0 { return [string]$Model.modelKey }
-        1 { return [string]$Model.displayName }
-        2 { return [string]$Model.publisher }
-        3 {
-            if ($Model.PSObject.Properties.Name -contains 'sizeBytes' -and $Model.sizeBytes) {
-                return [double]$Model.sizeBytes
-            }
-            return -1.0
-        }
-        4 { return (Get-ModelNumericParamValue -ParamString ([string]$Model.paramsString)) }
-        5 { return [string]$Model.architecture }
-        default { return [string]$Model.modelKey }
-    }
-}
-
-function Refresh-AliasStatus {
+function Render-Models {
+    $selected=if ($list.SelectedItems.Count) {$list.SelectedItems[0].Tag.ModelKey} else {''}
+    $list.BeginUpdate()
     try {
-        $loaded = Get-LoadedLlmInstances
-        $lines = @()
-        $modelMap = @{}
-        if (-not $DisableClaudeAliasSync) {
-            $modelMap = Get-ClaudeModelMap
+        $list.Items.Clear()
+        foreach ($m in @(Get-SortedModels $script:models $script:column $script:descending $filterBox.Text.Trim())) {
+            $item=New-Object Windows.Forms.ListViewItem([string]$m.ModelKey)
+            [void]$item.SubItems.Add([string]$m.DisplayName); [void]$item.SubItems.Add([string]$m.Publisher)
+            $size=if ($null -ne $m.SizeBytes) {([double]$m.SizeBytes / 1GB).ToString('N2')} else {'Unknown'}
+            [void]$item.SubItems.Add($size); [void]$item.SubItems.Add([string]$m.Params); [void]$item.SubItems.Add([string]$m.Architecture)
+            $item.Tag=$m; $item.ToolTipText=$m.ModelKey; [void]$list.Items.Add($item)
+            if ($m.ModelKey -eq $selected) {$item.Selected=$true}
         }
-
-        foreach ($aliasName in @('sonnet', 'opus', 'haiku')) {
-            $item = $loaded | Where-Object { $_.identifier -eq $aliasName } | Select-Object -First 1
-            if ($item) {
-                $lines += ("{0}: {1} | ctx={2} | status={3}" -f $aliasName, $item.modelKey, $item.contextLength, $item.status)
-            }
-            else {
-                $lines += ("{0}: <not loaded>" -f $aliasName)
-            }
-
-            if ($modelMap.ContainsKey($aliasName)) {
-                $canonicalAlias = [string]$modelMap[$aliasName]
-                if ($canonicalAlias -and $canonicalAlias -ne $aliasName) {
-                    $canonicalItem = $loaded | Where-Object { $_.identifier -eq $canonicalAlias } | Select-Object -First 1
-                    if ($canonicalItem) {
-                        $lines += ("  -> {0}: {1} | ctx={2} | status={3}" -f $canonicalAlias, $canonicalItem.modelKey, $canonicalItem.contextLength, $canonicalItem.status)
-                    }
-                    else {
-                        $lines += ("  -> {0}: <not loaded>" -f $canonicalAlias)
-                    }
-                }
-            }
-        }
-        $txtAliasStatus.Text = ($lines -join [Environment]::NewLine)
-    }
-    catch {
-        $txtAliasStatus.Text = "Unable to read loaded aliases: $($_.Exception.Message)"
-    }
+        for ($i=0;$i -lt $headers.Count;$i++) {$list.Columns[$i].Text=$headers[$i]}
+        $list.Columns[$script:column].Text += $(if ($script:descending) {' desc'} else {' asc'})
+        $emptyLabel.Visible=$list.Items.Count -eq 0
+        if ($script:models.Count -and -not $list.Items.Count) {$emptyLabel.Text='No models match this filter.'}
+        else {$emptyLabel.Text="No local models listed.`r`nStart a server, then click Refresh models."}
+    } finally {$list.EndUpdate()}
 }
-
-function Refresh-ModelList {
-    $listView.Items.Clear()
-    try {
-        $models = Get-LmsJson -CommandArgs @('ls', '--json')
-        $script:AllModels = @($models | Where-Object { $_.type -eq 'llm' })
-
-        $flt = $txtFilter.Text.Trim().ToLowerInvariant()
-        $filtered = $script:AllModels
-        if ($flt) {
-            $filtered = $filtered | Where-Object {
-                ($_.modelKey -and $_.modelKey.ToLowerInvariant().Contains($flt)) -or
-                ($_.displayName -and $_.displayName.ToLowerInvariant().Contains($flt)) -or
-                ($_.publisher -and $_.publisher.ToLowerInvariant().Contains($flt))
-            }
-        }
-
-        $sorted = $filtered | Sort-Object `
-            @{ Expression = { Get-SortKey -Model $_ -ColumnIndex $script:SortColumn }; Descending = $script:SortDescending }, `
-            @{ Expression = { [string]$_.modelKey }; Descending = $false }
-
-        foreach ($m in $sorted) {
-            $item = New-Object System.Windows.Forms.ListViewItem([string]$m.modelKey)
-            [void]$item.SubItems.Add([string]$m.displayName)
-            [void]$item.SubItems.Add([string]$m.publisher)
-            $sizeGiB = ''
-            if ($m.PSObject.Properties.Name -contains 'sizeBytes' -and $m.sizeBytes) {
-                $sizeGiB = ('{0:N2}' -f ($m.sizeBytes / 1GB))
-            }
-            [void]$item.SubItems.Add([string]$sizeGiB)
-            [void]$item.SubItems.Add([string]$m.paramsString)
-            [void]$item.SubItems.Add([string]$m.architecture)
-            $item.Tag = $m
-            [void]$listView.Items.Add($item)
-        }
-
-        Write-Log -Box $logBox -Message "Loaded $($filtered.Count) model(s) from LM Studio catalog."
-        Refresh-AliasStatus
-    }
-    catch {
-        Write-Log -Box $logBox -Message "Refresh failed: $($_.Exception.Message)"
-    }
+function Get-GuiProvider {
+    $kind=[string]$backendBox.SelectedItem; $url=$endpointBox.Text.Trim()
+    if (-not $tokenBox.Text -and $script:activeProvider.Kind -eq $kind -and $script:activeProvider.BaseUrl -eq $url.TrimEnd('/')) {return $script:activeProvider}
+    return New-Provider $kind $url $tokenBox.Text
 }
-
-$btnRefresh.Add_Click({ Refresh-ModelList })
-$txtFilter.Add_TextChanged({ Refresh-ModelList })
-$listView.Add_ColumnClick({
-    param($sender, $e)
-    if ($script:SortColumn -eq $e.Column) {
-        $script:SortDescending = -not $script:SortDescending
-    }
-    else {
-        $script:SortColumn = $e.Column
-        $script:SortDescending = $false
-    }
-    Refresh-ModelList
-})
-
-$btnShowLoaded.Add_Click({
+function Start-GuiTask {
+    param([string]$Operation,[string]$ModelId='', [switch]$Tools)
+    if ($script:worker) {return}
+    if ($script:unloadWorker) {Write-GuiLog 'Wait for model unloading to finish.';return}
     try {
-        $llm = Get-LoadedLlmInstances
-        if ($llm.Count -eq 0) {
-            Write-Log -Box $logBox -Message 'No loaded LLM instances.'
-            return
+        $chosen=Get-GuiProvider
+        if ($Operation -in @('Bind','Test')) {
+            if ($Operation -eq 'Bind' -and -not $list.SelectedItems.Count) {throw 'Select a model first.'}
+            if ($Operation -eq 'Bind' -and ($chosen.Kind -ne $script:activeProvider.Kind -or $chosen.BaseUrl -ne $script:activeProvider.BaseUrl)) {throw 'Save the server and refresh its model list first.'}
+            if ($Operation -eq 'Test') {
+                $saved=Get-SwitcherConfig $paths.Root
+                $binding=Get-Field $saved.bindings ([string]$aliasBox.SelectedItem)
+                if (-not $binding) {throw 'Save a model binding first.'}
+                $chosen=$saved.provider; $ModelId=$binding.ModelId
+            }
         }
-
-        foreach ($m in $llm) {
-            Write-Log -Box $logBox -Message ("loaded: identifier='{0}', modelKey='{1}', status='{2}', parallel={3}, ctx={4}, maxCtx={5}" -f $m.identifier, $m.modelKey, $m.status, $m.parallel, $m.contextLength, $m.maxContextLength)
+        $script:operation=$Operation
+        $script:worker=[PowerShell]::Create()
+        [void]$script:worker.AddScript({
+            param($Core,$Kind,$ProviderJson,$Root,$Name,$Id,$Ctx,$CheckTools)
+            $ErrorActionPreference='Stop'; . $Core
+            $p=$ProviderJson | ConvertFrom-Json
+            switch ($Kind) {
+                'Refresh' { $result=@(Get-ProviderModels $p) }
+                'Bind' { $result=Set-ModelBinding $Root $p $Name $Id $Ctx }
+                'Test' { $result=Test-ModelEndpoint $p $Id -Tools:$CheckTools }
+            }
+            [pscustomobject]@{result=$result;provider=$p} | ConvertTo-Json -Depth 30 -Compress
+        }.ToString())
+        foreach ($arg in @((Join-Path $PSScriptRoot 'local_switcher_core.ps1'),$Operation,($chosen | ConvertTo-Json -Compress),$paths.Root,[string]$aliasBox.SelectedItem,$ModelId,[int]$contextBox.Value,[bool]$Tools)) {[void]$script:worker.AddArgument($arg)}
+        foreach ($control in $script:busyControls) {$control.Enabled=$false}
+        $form.UseWaitCursor=$true
+        Write-GuiLog "$Operation in progress..."
+        $script:pending=$script:worker.BeginInvoke()
+    } catch {Write-GuiLog $_.Exception.Message; if ($script:worker) {$script:worker.Dispose();$script:worker=$null}}
+}
+$timer=New-Object Windows.Forms.Timer
+$timer.Interval=150
+$timer.Add_Tick({
+    if ($script:unloadWorker -and $script:unloadPending.IsCompleted) {
+        try {
+            $result=$script:unloadWorker.EndInvoke($script:unloadPending)
+            if ($script:unloadWorker.HadErrors) {throw [string]$script:unloadWorker.Streams.Error[0]}
+            Write-GuiLog ($result -join ' ')
+        } catch {Write-GuiLog ('Unload failed: ' + $_.Exception.Message)} finally {
+            $script:unloadWorker.Dispose();$script:unloadWorker=$null;$script:unloadPending=$null;$unloadButton.Enabled=$true
         }
-        Refresh-AliasStatus
     }
-    catch {
-        Write-Log -Box $logBox -Message "Unable to list loaded models: $($_.Exception.Message)"
+    if (-not $script:worker -or -not $script:pending.IsCompleted) {return}
+    try {
+        $output=$script:worker.EndInvoke($script:pending)
+        if ($script:worker.HadErrors) {throw [string]$script:worker.Streams.Error[0]}
+        $result=($output -join '') | ConvertFrom-Json
+        if ($script:operation -eq 'Refresh') {$script:models=@($result.result); $script:activeProvider=$result.provider; Render-Models; Write-GuiLog "Found $($script:models.Count) local models."}
+        else {Write-GuiLog ([string]$result.result);Update-BindingStatus}
+    } catch {Write-GuiLog ($_.Exception.Message + ' Start a local server or choose a different connector.')} finally {
+        $script:worker.Dispose();$script:worker=$null;$script:pending=$null
+        foreach ($control in $script:busyControls) {$control.Enabled=$true}
+        $contextBox.Enabled=$backendBox.SelectedItem -in @('LMStudio','Ollama')
+        $form.UseWaitCursor=$false
     }
 })
+$timer.Start()
 
-$btnBind.Add_Click({
+$backendBox.Add_SelectedIndexChanged({
+    $endpointBox.Text=(New-Provider ([string]$backendBox.SelectedItem)).BaseUrl
+    $tokenBox.Clear(); $script:models=@(); Render-Models
+    $contextBox.Value=0; $contextBox.Enabled=$backendBox.SelectedItem -in @('LMStudio','Ollama')
+})
+$contextBox.Enabled=$provider.Kind -in @('LMStudio','Ollama')
+$refreshButton.Add_Click({Start-GuiTask 'Refresh'})
+$filterBox.Add_TextChanged({Render-Models})
+$list.Add_ColumnClick({param($sender,$event); $next=Get-NextSort $script:lastClick $script:descending $event.Column; $script:column=$next.Column;$script:lastClick=$next.Column;$script:descending=$next.Descending;Render-Models})
+$bindButton.Add_Click({if ($list.SelectedItems.Count) {Start-GuiTask 'Bind' $list.SelectedItems[0].Tag.ModelKey} else {Write-GuiLog 'Select a model first.'}})
+$testButton.Add_Click({Start-GuiTask 'Test'})
+$toolsButton.Add_Click({Start-GuiTask 'Test' -Tools})
+$unloadButton.Add_Click({
+    if ($script:unloadWorker) {return}
     try {
-        if ($listView.SelectedItems.Count -eq 0) {
-            throw 'Select a model first.'
-        }
-
-        $aliasTarget = Get-TargetAlias
-        $contextTarget = Get-TargetContextLength
-        $model = $listView.SelectedItems[0].Tag
-        $modelKeyTarget = [string]$model.modelKey
-
-        if ($contextTarget -gt 0) {
-            Write-Log -Box $logBox -Message "Binding alias '$aliasTarget' -> '$modelKeyTarget' with context=$contextTarget..."
-        }
+        $selectedProvider=Get-GuiProvider
+        if ($script:worker) {[void]$script:worker.BeginStop($null,$null)}
+        $script:unloadWorker=[PowerShell]::Create()
+        [void]$script:unloadWorker.AddScript({param($Core,$ProviderJson);$ErrorActionPreference='Stop';. $Core;Unload-AllModels ($ProviderJson | ConvertFrom-Json)}.ToString())
+        [void]$script:unloadWorker.AddArgument((Join-Path $PSScriptRoot 'local_switcher_core.ps1'))
+        [void]$script:unloadWorker.AddArgument(($selectedProvider | ConvertTo-Json -Compress))
+        $unloadButton.Enabled=$false
+        Write-GuiLog 'Unloading all models from the selected server. An unresponsive engine will be stopped.'
+        $script:unloadPending=$script:unloadWorker.BeginInvoke()
+    } catch {Write-GuiLog $_.Exception.Message;if ($script:unloadWorker) {$script:unloadWorker.Dispose();$script:unloadWorker=$null};$unloadButton.Enabled=$true}
+})
+$saveServerButton.Add_Click({
+    try {
+        $chosen=Get-GuiProvider; $saved=Get-SwitcherConfig $paths.Root
+        if ($chosen.Kind -ne $saved.provider.Kind -or $chosen.BaseUrl -ne $saved.provider.BaseUrl) {Set-Field $saved 'bindings' ([pscustomobject]@{});$script:models=@();Render-Models}
+        Set-Field $saved 'provider' $chosen;Write-JsonFile $paths.Config $saved;$script:activeProvider=$chosen;$tokenBox.Clear();Update-BindingStatus
+        Write-GuiLog 'Server saved. Refresh models, then bind sonnet before opening local VS Code.'
+    } catch {Write-GuiLog $_.Exception.Message}
+})
+$addProjectButton.Add_Click({
+    $dialog=New-Object Windows.Forms.FolderBrowserDialog
+    $dialog.Description='Choose a project for local models. Use a separate checkout for parallel work.'
+    try {if ($dialog.ShowDialog() -eq 'OK') {Assert-LocalProject $dialog.SelectedPath;Add-LocalProject $paths.Root $dialog.SelectedPath;if (-not $projectBox.Items.Contains($dialog.SelectedPath)) {[void]$projectBox.Items.Add($dialog.SelectedPath)};$projectBox.SelectedItem=$dialog.SelectedPath;Write-GuiLog 'Project registered.'}}
+    catch {Write-GuiLog $_.Exception.Message} finally {$dialog.Dispose()}
+})
+function Open-IsolatedWindow {
+    param([switch]$Login)
+    try {
+        $args=@('-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $PSScriptRoot 'launch_claude_local_vscode.ps1'),'-StateRoot',$paths.Root)
+        if ($Login) {$args += '-LoginAccountB'}
         else {
-            Write-Log -Box $logBox -Message "Binding alias '$aliasTarget' -> '$modelKeyTarget' with context=auto..."
+            if (-not $projectBox.SelectedItem) {throw 'Add or select a separate local project first.'}
+            Assert-LocalProject ([string]$projectBox.SelectedItem)
+            [void](Get-LocalEnvironment (Get-SwitcherConfig $paths.Root) $paths)
+            $args += @('-WorkspacePath',[string]$projectBox.SelectedItem)
         }
-        $out = Bind-ModelAlias -BindAlias $aliasTarget -BindModelKey $modelKeyTarget -BindContextLength $contextTarget
-        if ($out.Trim()) {
-            foreach ($line in ($out -split "(`r`n|`n|`r)")) {
-                $trimmed = $line.Trim()
-                if ($trimmed) {
-                    Write-Log -Box $logBox -Message $trimmed
-                }
-            }
-        }
-        Write-Log -Box $logBox -Message "Done. Alias '$aliasTarget' now points to '$modelKeyTarget' (context=$([int]$contextTarget))."
-        Refresh-AliasStatus
-    }
-    catch {
-        Write-Log -Box $logBox -Message "Bind failed: $($_.Exception.Message)"
-    }
-})
-
-$btnTest.Add_Click({
-    try {
-        $aliasTarget = Get-TargetAlias
-        $msg = Test-AnthropicEndpoint -AliasToTest $aliasTarget
-        Write-Log -Box $logBox -Message $msg
-    }
-    catch {
-        Write-Log -Box $logBox -Message "Test failed: $($_.Exception.Message)"
-    }
-})
-
-$btnContextLoaded.Add_Click({
-    try {
-        $aliasTarget = Get-TargetAlias
-        $contextTarget = Get-TargetContextLength
-        if ($contextTarget -le 0) {
-            throw 'Set Context > 0 to update a loaded alias.'
-        }
-
-        Write-Log -Box $logBox -Message "Updating loaded alias '$aliasTarget' to context=$contextTarget..."
-        $out = Reload-LoadedAliasContext -AliasToReload $aliasTarget -NewContextLength $contextTarget
-        if ($out.Trim()) {
-            foreach ($line in ($out -split "(`r`n|`n|`r)")) {
-                $trimmed = $line.Trim()
-                if ($trimmed) {
-                    Write-Log -Box $logBox -Message $trimmed
-                }
-            }
-        }
-        Write-Log -Box $logBox -Message "Done. Loaded alias '$aliasTarget' context set to $contextTarget."
-        Refresh-AliasStatus
-    }
-    catch {
-        Write-Log -Box $logBox -Message "Context update failed: $($_.Exception.Message)"
-    }
-})
-
-Write-Log -Box $logBox -Message 'Ready. Make sure LM Studio server is running on http://localhost:1234.'
-if (-not $DisableClaudeAliasSync) {
-    $modelMap = Get-ClaudeModelMap
-    if ($modelMap.Count -gt 0) {
-        Write-Log -Box $logBox -Message ("Detected canonical aliases: sonnet='{0}', opus='{1}', haiku='{2}'." -f $modelMap['sonnet'], $modelMap['opus'], $modelMap['haiku'])
-    }
-    elseif ($script:ClaudeModelMapError) {
-        Write-Log -Box $logBox -Message ("Canonical alias detection unavailable: {0}" -f $script:ClaudeModelMapError)
-    }
+        [void][IO.Directory]::CreateDirectory($paths.Root)
+        $startupLog=Join-Path $paths.Root 'launcher-errors.log'
+        Start-Process -FilePath (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe') -ArgumentList (($args | ForEach-Object {ConvertTo-ProcessArgument $_}) -join ' ') -WindowStyle Hidden -RedirectStandardError $startupLog | Out-Null
+        Write-GuiLog "Launcher started. If no window opens, check $startupLog"
+    } catch {Write-GuiLog $_.Exception.Message}
 }
-Refresh-ModelList
-
-[void]$form.ShowDialog()
+$launchButton.Add_Click({Open-IsolatedWindow})
+$loginButton.Add_Click({Open-IsolatedWindow -Login})
+$ollamaButton.Add_Click({Start-Process 'https://ollama.com/download/windows' | Out-Null})
+$lmButton.Add_Click({Start-Process 'https://lmstudio.ai/download' | Out-Null})
+$form.Add_FormClosed({$timer.Stop();$timer.Dispose();if ($script:worker) {[void]$script:worker.BeginStop($null,$null)};if ($script:unloadWorker) {[void]$script:unloadWorker.BeginStop($null,$null)}})
+Update-BindingStatus
+if ($PreviewModelsFile) {$script:models=@((Read-JsonFile $PreviewModelsFile).models)}
+Render-Models
+Write-GuiLog 'Choose a server and refresh models. No runtime installed? Use Get Ollama or Get LM Studio.'
+if ($PreviewPath) {
+    # Render the real form without launching apps or probing a server; used for visual QA.
+    $form.Show();[Windows.Forms.Application]::DoEvents()
+    $bitmap=New-Object Drawing.Bitmap($form.Width,$form.Height)
+    try {$form.DrawToBitmap($bitmap,(New-Object Drawing.Rectangle(0,0,$form.Width,$form.Height)));$bitmap.Save([IO.Path]::GetFullPath($PreviewPath),[Drawing.Imaging.ImageFormat]::Png)}
+    finally {$bitmap.Dispose();$form.Close();$form.Dispose()}
+} else {[void]$form.ShowDialog();$form.Dispose()}

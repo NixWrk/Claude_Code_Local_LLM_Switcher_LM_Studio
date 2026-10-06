@@ -1,3 +1,4 @@
 @echo off
 setlocal
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0lmstudio_alias_switcher_gui.ps1"
+powershell -NoProfile -STA -ExecutionPolicy Bypass -File "%~dp0lmstudio_alias_switcher_gui.ps1" %*
+exit /b %errorlevel%

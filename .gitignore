@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.local-state/
+.vscode-local-userdata/
+*.log
+test-results/

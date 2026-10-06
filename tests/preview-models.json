@@ -1,0 +1,8 @@
+{
+  "models": [
+    {"ModelKey":"fixture-small","DisplayName":"Preview fixture: small","Publisher":"test","SizeBytes":4000000000,"Params":"7B","Architecture":"llama"},
+    {"ModelKey":"fixture-large","DisplayName":"Preview fixture: large","Publisher":"test","SizeBytes":18000000000,"Params":"32B","Architecture":"qwen"},
+    {"ModelKey":"fixture-medium","DisplayName":"Preview fixture: medium","Publisher":"test","SizeBytes":9500000000,"Params":"14B","Architecture":"qwen"},
+    {"ModelKey":"fixture-unknown","DisplayName":"Preview fixture: size unavailable","Publisher":"test","SizeBytes":null,"Params":"","Architecture":""}
+  ]
+}
