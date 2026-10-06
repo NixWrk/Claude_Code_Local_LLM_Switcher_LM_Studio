@@ -260,7 +260,7 @@ function Test-ModelEndpoint {
 }
 
 function Set-ModelBinding {
-    param([string]$StateRoot, $Provider, [ValidateSet('sonnet','opus','haiku')][string]$Alias, [string]$ModelKey, [int]$ContextLength = 0)
+    param([string]$StateRoot, $Provider, [ValidateSet('sonnet','opus','haiku')][string]$Alias, [string]$ModelKey, [int]$ContextLength = 0, [switch]$VerifyTools)
     if ($ContextLength -lt 0) { throw 'ContextLength must be >= 0.' }
     $config = Get-SwitcherConfig $StateRoot
     $models = @(Get-ProviderModels $Provider)
@@ -301,6 +301,7 @@ function Set-ModelBinding {
     }
     # Validate before committing: old mapping and loaded models survive any failure.
     [void](Test-ModelEndpoint $Provider $modelId)
+    if ($VerifyTools) {[void](Test-ModelEndpoint $Provider $modelId -Tools)}
     if ($config.provider.Kind -ne $Provider.Kind -or $config.provider.BaseUrl -ne $Provider.BaseUrl) { Set-Field $config 'bindings' ([pscustomobject]@{}) }
     Set-Field $config 'provider' $Provider
     Set-Field $config.bindings $Alias ([pscustomobject]@{ModelKey=$ModelKey;ModelId=$modelId;ContextLength=$effectiveContext})

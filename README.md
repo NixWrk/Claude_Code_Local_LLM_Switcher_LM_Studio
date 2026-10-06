@@ -25,30 +25,28 @@ LM Studio must support its native v1 API and Anthropic Messages endpoint (0.4.1+
 - Python 3.9+ **only for the OpenAI adapter and Python tests**. Native Anthropic connections do not need Python.
 - Your second claude.ai account for the separate account login workflow.
 
-If no runtime is installed, the GUI offers **Get Ollama** and **Get LM Studio**, linking to official installers. The switcher does not silently install a runtime or download multi-gigabyte model weights.
+If the selected native runtime is not ready, the GUI shows its installation link and preparation instructions. The switcher does not silently install a runtime or download multi-gigabyte model weights.
 
 ## Quick start
 
-1. Install/start [Ollama](https://ollama.com/download/windows) or [LM Studio](https://lmstudio.ai/download), download a suitable local model, and enable the server.
-2. Prepare the isolated state, selecting the runtime and a separate project directory:
+Run `run_switcher_gui.cmd`. The Russian interface guides you through four required steps:
 
-   ```powershell
-   .\run_prepare.cmd -Backend Ollama -WorkspacePath "J:\Local Projects\My Project"
-   ```
+1. **Сервер**: choose the runtime. Install/start [Ollama](https://ollama.com/download/windows) or [LM Studio](https://lmstudio.ai/download), download a model and enable the API server. Confirm runtime readiness, then click **Проверить сервер и найти модели**. Other compatible servers require their loopback URL. Connection errors keep later steps locked.
+2. **Модель**: select a model and click **Проверить и использовать модель**. Both a text response and a valid tool call must succeed before the `sonnet` mapping is saved and the account step opens. Optional context settings are collapsed and only available for native runtimes. Additional `opus`/`haiku` mappings and repeat diagnostics appear under additional parameters after the main model passes.
+3. **Аккаунт B**: click **Открыть вход в аккаунт B**, sign in inside the isolated VS Code window, then return and click **Проверить вход**. The switcher checks `claude auth status --json` using the isolated extension and account directory. Confirm that the reported account is your second account B before continuing. Use a separate browser profile or check the browser account before authorizing.
+4. **Проект и запуск**: select an existing separate project folder, then click **Открыть локальный VS Code**. Account identity, saved server, project overrides and model availability are checked again before launch. Confirm a real read/edit/command task while Desktop continues using account A.
 
-   Use `-Backend LMStudio` for LM Studio. This requires an existing project directory; it does not clone projects.
+Each new GUI session starts with a server check. Editing a server/model invalidates its dependent checks; asynchronous completions from an older configuration cannot unlock the workflow. Only the current page is shown. Irrelevant controls are hidden, future steps are disabled, and the footer explains the next required action. Emergency unloading remains available during a pending request.
 
-3. Run `run_login_account_b.cmd`. Open Claude Code in that isolated login window and sign in to **account B**. Use a separate browser profile or check the browser account before authorizing. Close the login window after verifying the account in Claude Code.
-4. Run `run_switcher_gui.cmd`. Choose the server, **Save server**, then **Refresh models**. Select a model, choose `sonnet` and a context length, then **Use selected model**. Binding tests a response before saving.
-5. Select a registered project and click **Open local VS Code**. Alternatively:
+The server token field appears only when **Сервер требует API-токен** is enabled, including after an authentication error. A local API token is separate from the Anthropic account login. Human sign-in remains manual; simultaneous account A/B operation must be confirmed on your installed extension version.
 
-   ```powershell
-   .\run_local_vscode.cmd -WorkspacePath "J:\Local Projects\My Project"
-   ```
+The existing command-line preparation, login and launch wrappers remain available for scripted use. They do not require completing the GUI wizard:
 
-6. Use **Test response** and **Test tools** to check the selected model. Confirm a real read/edit/command task in the local Claude chat while Desktop continues using account A.
-
-Account B login with a local backend must be verified on your installed extension version. The switcher reports the saved backend separately from account login; a local API token is not proof of an Anthropic account. Human account sign-in cannot be automated by these scripts.
+```powershell
+.\run_prepare.cmd -Backend Ollama -WorkspacePath "J:\Local Projects\My Project"
+.\run_login_account_b.cmd
+.\run_local_vscode.cmd -WorkspacePath "J:\Local Projects\My Project"
+```
 
 ## Isolation boundaries
 
@@ -78,7 +76,7 @@ See [Anthropic's multiple-account documentation](https://code.claude.com/docs/en
 
 ## Models, context and sorting
 
-**Refresh models** requests the catalog from the selected running server at the configured URL. It does not search all disks or search online model repositories:
+**Проверить сервер и найти модели** and **Обновить список** request the catalog from the selected running server at the configured URL. They do not search all disks or search online model repositories:
 
 - LM Studio: `GET /api/v1/models`, including downloaded models that are not currently loaded. Embedding models are excluded from the selector.
 - Ollama: `GET /api/tags`, listing installed model tags. Cloud aliases/remote models exposed by Ollama are excluded.
@@ -90,9 +88,9 @@ Model folders and imports are managed by the runtime itself. Download/import a m
 - `sonnet` is required before local launch. Unconfigured Opus/Haiku/helper models use that local model rather than a built-in Claude model.
 - **Largest disk size first** is the default order. The first click on Size or Parameters selects descending order; subsequent clicks toggle. Other columns start ascending. Filtering and sorting use the cached catalog without invoking the server on each keystroke.
 - Size compares numeric bytes, not formatted strings. Parameter sorting understands K/M/B/T. Unknown sizes/counts remain last in either direction. File size and parameter count are different measures; choose the relevant column.
-- A binding is committed only after loading/configuring the model and validating a response. Failed loading or validation leaves the saved mapping unchanged. Existing models are not proactively unloaded: enough memory is needed to load another model, or unload an unused model in the runtime yourself.
+- A binding is committed only after loading/configuring the model and validating a response. The guided GUI additionally requires a valid tool call before saving. Failed loading or validation leaves the saved mapping unchanged. Existing models are not proactively unloaded: enough memory is needed to load another model, or unload an unused model in the runtime yourself.
 - Context `0` uses the server default. For Ollama, an explicit context creates a reusable `local-switcher-ctx-<hash>:latest` variant and preserves the original tag. LM Studio's actual load context is recorded when available.
-- Generic servers control their context themselves; the GUI disables context changes for them and the CLI rejects unsupported changes.
+- Generic servers control their context themselves; the GUI hides context controls for them and the CLI rejects unsupported changes.
 - Known contexts are passed as a conservative client context limit. Claude Code's exact compaction behavior depends on its version/model recognition; verify `/context` against your runtime. Prefer a sufficient explicit context for coding workloads.
 - Start a new local Claude session/window after changing bindings. Close existing local VS Code windows before changing provider or credentials; running chats keep their startup configuration.
 
@@ -148,7 +146,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\lmstudio_alias_switcher_gu
 
 Use `-BaseUrl` and optional `-AuthToken` together with `-Backend`. Tokens can also be entered in the password field in the GUI. Errors return exit code 1, including failed endpoint tests. The old `-DisableClaudeAliasSync` flag is accepted for compatibility but is unnecessary: canonical alias syncing was removed. Custom family aliases were removed; bind a backend model ID to one of the three supported Claude families.
 
-The **Token** field is the API credential of the **local server**. Leave it blank for local Ollama or LM Studio with authentication disabled. If LM Studio's **Require Authentication** is enabled, use a token created in its server settings. Generic servers need a token only if they require authentication. Anthropic account B uses **Sign in account B** separately. A blank field preserves an already configured token for the same normalized endpoint; it does not clear that token.
+The **Токен локального сервера** field is the API credential of the **local server**. For local Ollama or LM Studio with authentication disabled, leave **Сервер требует API-токен** unchecked; the token field stays hidden. If LM Studio's **Require Authentication** is enabled, enable that option and use a token created in its server settings. Generic servers need a token only if they require authentication. Anthropic account B uses step 3 separately. With the option enabled, a blank field preserves an already configured token for the same normalized endpoint. Unchecking the option removes the backend credential when a successful connection is saved.
 
 `run_reset_local_chats.cmd` clears account B's local Claude histories and local VS Code caches (including isolated extension UI state). It preserves the account B login, model mappings and registered project paths. It refuses a running account B VS Code instance, targets outside its state root, junctions and symlinks. Account logout is performed in the dedicated account B login window; it is not part of chat reset.
 
@@ -158,7 +156,9 @@ The **Token** field is the API credential of the **local server**. Leave it blan
 | --- | --- |
 | `local_switcher_core.ps1` | Isolated state, JSONC, providers, mappings, sorting, process environment |
 | `runtime_control.ps1` | Bounded model unloading and verified emergency process termination |
-| `lmstudio_alias_switcher_gui.ps1` | GUI and headless CLI; network work runs off the UI thread |
+| `lmstudio_alias_switcher_gui.ps1` | Entry point and headless CLI |
+| `local_switcher_gui.ps1` | Guided WinForms UI; network work runs off the UI thread |
+| `gui_workflow.ps1` | Prerequisite policy and isolated account status checks |
 | `prepare_windows.ps1` | Isolated setup and runtime diagnostics |
 | `launch_claude_local_vscode.ps1` | Account B login/local launch and optional adapter lifecycle |
 | `openai_bridge.py` | Dependency-free local API translation |
@@ -169,10 +169,12 @@ Run regression tests without installing a runtime, logging in or changing main a
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\test_core.ps1
 pwsh -NoProfile -File .\tests\test_core.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\test_runtime_control.ps1
+powershell -NoProfile -STA -ExecutionPolicy Bypass -File .\tests\test_gui_workflow.ps1
+pwsh -NoProfile -STA -File .\tests\test_gui_workflow.ps1
 python -m unittest discover -s tests -p "test_*.py" -v
 ```
 
-Tests cover numeric sorting/click direction, JSONC, argv escaping, isolated settings/environment, DPAPI, provider context calls, failed binding preservation, CLI exit codes, real HTTP fixture connections for all four providers, and adapter SSE/tool conversion. HTTP fixtures are **not** real model execution or proof of simultaneous account A/B login.
+Tests cover numeric sorting/click direction, JSONC, argv escaping, isolated settings/environment, DPAPI, provider context calls, failed binding preservation, CLI exit codes, real HTTP fixture connections for all four providers, and adapter SSE/tool conversion. Workflow tests inspect actual WinForms controls, conditional visibility, prerequisite gating, account-directory checks, busy-state emergency access, and asynchronous model/tool success and failure. HTTP fixtures are **not** real model execution or proof of simultaneous account A/B login.
 
 A separate real-runtime smoke check used portable Ollama 0.35.1 and `qwen3:0.6b`: catalog/binding, a 32768-token context variant, text response, tool probe, SSE, and an actual bundled Claude Code CLI request reached the local model. The tiny model did not reliably follow the CLI instruction, so this verifies connectivity, not coding quality. Health probes disable thinking to avoid mistaking reasoning-only budget exhaustion for a broken endpoint.
 

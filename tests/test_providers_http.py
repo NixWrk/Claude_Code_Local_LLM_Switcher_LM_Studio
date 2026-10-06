@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class ProviderFixture(BaseHTTPRequestHandler):
     fail_messages = False
+    fail_tools = False
 
     def log_message(self, *_):
         pass
@@ -49,6 +50,8 @@ class ProviderFixture(BaseHTTPRequestHandler):
             if self.fail_messages:
                 return self.respond({"error": "fixture failure"}, 503)
             if "tools" in body:
+                if self.fail_tools:
+                    return self.respond({"type": "message", "role": "assistant", "content": [{"type": "text", "text": "No tool call"}]})
                 content = [{"type": "tool_use", "id": "probe", "name": "local_probe", "input": {"value": "OK"}}]
             else:
                 content = [{"type": "text", "text": "OK"}]
@@ -110,6 +113,11 @@ class PowerShellHttpTests(unittest.TestCase):
             self.assertIn(b"fixture:latest", result.stdout)
             self.assertNotIn(b"fixture:cloud", result.stdout)
 
+    def test_guided_gui_async_connection_and_model_checks(self):
+        result = subprocess.run(["powershell.exe", "-NoProfile", "-STA", "-ExecutionPolicy", "Bypass", "-File", str(ROOT / "tests" / "test_gui_workflow.ps1"), "-BaseUrl", self.base], capture_output=True, timeout=50)
+        self.assertEqual(result.returncode, 0, result.stderr.decode(errors="replace"))
+        self.assertIn(b"PASS:", result.stdout)
+
     def test_chat_reset_preserves_account_and_mapping(self):
         with tempfile.TemporaryDirectory() as state:
             state = Path(state)
@@ -125,6 +133,15 @@ class PowerShellHttpTests(unittest.TestCase):
             self.assertFalse(projects.exists())
             self.assertEqual(credentials.read_text(), "fixture-login")
             self.assertEqual(mapping.read_text(), "{}")
+
+    def test_guided_gui_tool_failure_preserves_mapping_and_gates(self):
+        ProviderFixture.fail_tools = True
+        try:
+            result = subprocess.run(["powershell.exe", "-NoProfile", "-STA", "-ExecutionPolicy", "Bypass", "-File", str(ROOT / "tests" / "test_gui_workflow.ps1"), "-BaseUrl", self.base, "-ExpectToolFailure"], capture_output=True, timeout=50)
+            self.assertEqual(result.returncode, 0, result.stderr.decode(errors="replace"))
+            self.assertIn(b"PASS:", result.stdout)
+        finally:
+            ProviderFixture.fail_tools = False
 
 
 if __name__ == "__main__":
