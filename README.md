@@ -78,6 +78,14 @@ See [Anthropic's multiple-account documentation](https://code.claude.com/docs/en
 
 ## Models, context and sorting
 
+**Refresh models** requests the catalog from the selected running server at the configured URL. It does not search all disks or search online model repositories:
+
+- LM Studio: `GET /api/v1/models`, including downloaded models that are not currently loaded. Embedding models are excluded from the selector.
+- Ollama: `GET /api/tags`, listing installed model tags. Cloud aliases/remote models exposed by Ollama are excluded.
+- Other Anthropic/OpenAI-compatible servers: `GET /v1/models`. Whether this includes unloaded models depends on that server.
+
+Model folders and imports are managed by the runtime itself. Download/import a model in that application, then refresh here. The **Filter** field searches the already fetched model key/name/publisher; it makes no new network requests. The list remains unchanged until the next refresh. Missing size metadata is shown as `Unknown` and sorted last.
+
 - `sonnet`, `opus` and `haiku` map through `ANTHROPIC_DEFAULT_*_MODEL`. No bundled `cli.js` parsing, fake canonical Claude IDs, or duplicate short/canonical loading.
 - `sonnet` is required before local launch. Unconfigured Opus/Haiku/helper models use that local model rather than a built-in Claude model.
 - **Largest disk size first** is the default order. The first click on Size or Parameters selects descending order; subsequent clicks toggle. Other columns start ascending. Filtering and sorting use the cached catalog without invoking the server on each keystroke.
@@ -139,6 +147,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\lmstudio_alias_switcher_gu
 ```
 
 Use `-BaseUrl` and optional `-AuthToken` together with `-Backend`. Tokens can also be entered in the password field in the GUI. Errors return exit code 1, including failed endpoint tests. The old `-DisableClaudeAliasSync` flag is accepted for compatibility but is unnecessary: canonical alias syncing was removed. Custom family aliases were removed; bind a backend model ID to one of the three supported Claude families.
+
+The **Token** field is the API credential of the **local server**. Leave it blank for local Ollama or LM Studio with authentication disabled. If LM Studio's **Require Authentication** is enabled, use a token created in its server settings. Generic servers need a token only if they require authentication. Anthropic account B uses **Sign in account B** separately. A blank field preserves an already configured token for the same normalized endpoint; it does not clear that token.
 
 `run_reset_local_chats.cmd` clears account B's local Claude histories and local VS Code caches (including isolated extension UI state). It preserves the account B login, model mappings and registered project paths. It refuses a running account B VS Code instance, targets outside its state root, junctions and symlinks. Account logout is performed in the dedicated account B login window; it is not part of chat reset.
 

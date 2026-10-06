@@ -58,7 +58,7 @@ $form.Font=New-Object Drawing.Font('Segoe UI',10)
 $layout=New-Object Windows.Forms.TableLayoutPanel
 $layout.Dock='Fill'; $layout.Padding=New-Object Windows.Forms.Padding(16)
 $layout.ColumnCount=1; $layout.RowCount=8
-foreach ($height in @(44,42,44,80,52,40)) {[void]$layout.RowStyles.Add((New-Object Windows.Forms.RowStyle('Absolute',$height)))}
+foreach ($height in @(44,106,44,80,52,40)) {[void]$layout.RowStyles.Add((New-Object Windows.Forms.RowStyle('Absolute',$height)))}
 [void]$layout.RowStyles.Add((New-Object Windows.Forms.RowStyle('Percent',100)))
 [void]$layout.RowStyles.Add((New-Object Windows.Forms.RowStyle('Absolute',110)))
 $form.Controls.Add($layout)
@@ -104,8 +104,20 @@ $endpointBox=New-TextBox $connectionRow 270; $endpointBox.Text=$provider.BaseUrl
 [void](New-Label $connectionRow 'Token')
 $tokenBox=New-TextBox $connectionRow 140; $tokenBox.UseSystemPasswordChar=$true
 $tokenBox.AccessibleName='Backend API token (blank keeps the saved token for this endpoint)'
+$tokenBox.AccessibleDescription='Optional API token of the local server. Leave blank for Ollama or LM Studio without authentication. Anthropic account B signs in separately.'
 $saveServerButton=New-Button $connectionRow 'Save server' 115
 $refreshButton=New-Button $connectionRow 'Refresh models' 145
+$connectionGroup=New-Object Windows.Forms.TableLayoutPanel
+$connectionGroup.Dock='Fill';$connectionGroup.ColumnCount=1;$connectionGroup.RowCount=2
+[void]$connectionGroup.RowStyles.Add((New-Object Windows.Forms.RowStyle('Absolute',38)))
+[void]$connectionGroup.RowStyles.Add((New-Object Windows.Forms.RowStyle('Percent',100)))
+$layout.Controls.Remove($connectionRow)
+$layout.Controls.Add($connectionGroup,0,1)
+$connectionGroup.Controls.Add($connectionRow,0,0)
+$tokenHelp=New-Object Windows.Forms.Label
+$tokenHelp.Dock='Fill';$tokenHelp.Margin=New-Object Windows.Forms.Padding(0,4,0,0)
+$tokenHelp.Text="Token = API credential of the selected local server. Ollama / LM Studio without authentication: leave blank.`r`nLM Studio with Require Authentication: use its server token. Sign in to Anthropic account B separately.`r`nIf a token is already configured for this endpoint, leaving the field blank keeps it."
+$connectionGroup.Controls.Add($tokenHelp,0,1)
 
 $projectRow=New-Row 2
 [void](New-Label $projectRow 'Project')
@@ -197,8 +209,9 @@ function Render-Models {
 }
 function Get-GuiProvider {
     $kind=[string]$backendBox.SelectedItem; $url=$endpointBox.Text.Trim()
-    if (-not $tokenBox.Text -and $script:activeProvider.Kind -eq $kind -and $script:activeProvider.BaseUrl -eq $url.TrimEnd('/')) {return $script:activeProvider}
-    return New-Provider $kind $url $tokenBox.Text
+    $candidate=New-Provider $kind $url $tokenBox.Text
+    if (-not $tokenBox.Text -and $script:activeProvider.Kind -eq $candidate.Kind -and $script:activeProvider.BaseUrl -eq $candidate.BaseUrl) {return $script:activeProvider}
+    return $candidate
 }
 function Start-GuiTask {
     param([string]$Operation,[string]$ModelId='', [switch]$Tools)
@@ -330,6 +343,7 @@ Update-BindingStatus
 if ($PreviewModelsFile) {$script:models=@((Read-JsonFile $PreviewModelsFile).models)}
 Render-Models
 Write-GuiLog 'Choose a server and refresh models. No runtime installed? Use Get Ollama or Get LM Studio.'
+Write-GuiLog 'Refresh models reads the selected server catalog. Filter searches the cached list; it does not download model weights.'
 if ($PreviewPath) {
     # Render the real form without launching apps or probing a server; used for visual QA.
     $form.Show();[Windows.Forms.Application]::DoEvents()
