@@ -5,6 +5,7 @@ import subprocess
 import tempfile
 import threading
 import unittest
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -14,6 +15,10 @@ ROOT = Path(__file__).resolve().parents[1]
 class ProviderFixture(BaseHTTPRequestHandler):
     fail_messages = False
     fail_tools = False
+    fail_catalog = False
+    require_auth = False
+    delay_messages = 0
+    requests = []
 
     def log_message(self, *_):
         pass
@@ -24,9 +29,20 @@ class ProviderFixture(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(encoded)))
         self.end_headers()
-        self.wfile.write(encoded)
+        try:
+            self.wfile.write(encoded)
+        except (ConnectionError, OSError):
+            # A cancelled GUI request intentionally closes its socket.
+            pass
 
     def do_GET(self):
+        type(self).requests.append(("GET", self.path))
+        if self.path == "/fixture/requests":
+            return self.respond({"message_requests": sum(1 for method, path in self.requests if method == "POST" and path == "/v1/messages")})
+        if self.require_auth and self.headers.get("Authorization") != "Bearer fixture-secret":
+            return self.respond({"error": "auth required"}, 401)
+        if self.fail_catalog:
+            return self.respond({"error": "catalog unavailable"}, 503)
         if self.path == "/api/v1/models":
             return self.respond({"models": [{"type": "llm", "key": "fixture-large", "display_name": "Large", "publisher": "fixture", "size_bytes": 12000000000,
                 "params_string": "12B", "max_context_length": 65536, "loaded_instances": []},
@@ -39,7 +55,13 @@ class ProviderFixture(BaseHTTPRequestHandler):
         self.respond({"error": "unknown"}, 404)
 
     def do_POST(self):
+        type(self).requests.append(("POST", self.path))
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
+        if self.path == "/fixture/control":
+            for key in ("fail_catalog", "require_auth", "delay_messages"):
+                if key in body:
+                    setattr(type(self), key, body[key])
+            return self.respond({"ok": True})
         if self.path == "/api/v1/models/load":
             return self.respond({"status": "loaded", "instance_id": "fixture-instance", "load_config": {"context_length": body.get("context_length", 32768)}})
         if self.path == "/api/show":
@@ -47,6 +69,7 @@ class ProviderFixture(BaseHTTPRequestHandler):
         if self.path == "/api/create":
             return self.respond({"status": "success"})
         if self.path == "/v1/messages":
+            time.sleep(self.delay_messages)
             if self.fail_messages:
                 return self.respond({"error": "fixture failure"}, 503)
             if "tools" in body:
@@ -57,12 +80,17 @@ class ProviderFixture(BaseHTTPRequestHandler):
                 content = [{"type": "text", "text": "OK"}]
             return self.respond({"type": "message", "role": "assistant", "model": body["model"], "content": content})
         if self.path == "/v1/chat/completions":
-            return self.respond({"choices": [{"message": {"content": "OK"}, "finish_reason": "stop"}]})
+            message = {"content": "OK"}
+            if "tools" in body:
+                message = {"content": None, "tool_calls": [{"id": "probe", "type": "function", "function": {"name": "local_probe", "arguments": '{"value":"OK"}'}}]}
+            return self.respond({"choices": [{"message": message, "finish_reason": "stop"}]})
         self.respond({"error": "unknown"}, 404)
 
 
 @unittest.skipUnless(os.name == "nt", "Windows PowerShell required")
 class PowerShellHttpTests(unittest.TestCase):
+    def setUp(self):
+        ProviderFixture.requests = []
     @classmethod
     def setUpClass(cls):
         cls.server = ThreadingHTTPServer(("127.0.0.1", 0), ProviderFixture)
@@ -117,6 +145,8 @@ class PowerShellHttpTests(unittest.TestCase):
         result = subprocess.run(["powershell.exe", "-NoProfile", "-STA", "-ExecutionPolicy", "Bypass", "-File", str(ROOT / "tests" / "test_gui_workflow.ps1"), "-BaseUrl", self.base], capture_output=True, timeout=50)
         self.assertEqual(result.returncode, 0, result.stderr.decode(errors="replace"))
         self.assertIn(b"PASS:", result.stdout)
+        self.assertIn(("GET", "/api/v1/models"), ProviderFixture.requests)
+        self.assertIn(("POST", "/v1/messages"), ProviderFixture.requests)
 
     def test_chat_reset_preserves_account_and_mapping(self):
         with tempfile.TemporaryDirectory() as state:
@@ -140,8 +170,32 @@ class PowerShellHttpTests(unittest.TestCase):
             result = subprocess.run(["powershell.exe", "-NoProfile", "-STA", "-ExecutionPolicy", "Bypass", "-File", str(ROOT / "tests" / "test_gui_workflow.ps1"), "-BaseUrl", self.base, "-ExpectToolFailure"], capture_output=True, timeout=50)
             self.assertEqual(result.returncode, 0, result.stderr.decode(errors="replace"))
             self.assertIn(b"PASS:", result.stdout)
+            self.assertIn(("POST", "/v1/messages"), ProviderFixture.requests)
         finally:
             ProviderFixture.fail_tools = False
+
+    def test_interactive_flow_all_providers(self):
+        for backend in ("LMStudio", "Ollama", "Anthropic", "OpenAI"):
+            with self.subTest(backend=backend):
+                result = subprocess.run(["powershell.exe", "-NoProfile", "-STA", "-ExecutionPolicy", "Bypass", "-File", str(ROOT / "tests" / "test_interactive_flow.ps1"), "-BaseUrl", self.base, "-Backend", backend], capture_output=True, timeout=60)
+                self.assertEqual(result.returncode, 0, result.stderr.decode(errors="replace"))
+                self.assertIn(b"interactive flow checks", result.stdout)
+
+    def test_interactive_errors_and_cancellation(self):
+        for scenario in ("Offline", "Auth", "Cancel", "Unload"):
+            with self.subTest(scenario=scenario):
+                ProviderFixture.fail_catalog = scenario == "Offline"
+                ProviderFixture.require_auth = scenario == "Auth"
+                ProviderFixture.delay_messages = 3 if scenario in ("Cancel", "Unload") else 0
+                ProviderFixture.requests = []
+                try:
+                    result = subprocess.run(["powershell.exe", "-NoProfile", "-STA", "-ExecutionPolicy", "Bypass", "-File", str(ROOT / "tests" / "test_interactive_errors.ps1"), "-BaseUrl", self.base, "-Scenario", scenario], capture_output=True, timeout=45)
+                    self.assertEqual(result.returncode, 0, result.stderr.decode(errors="replace"))
+                    self.assertIn(b"PASS:", result.stdout)
+                finally:
+                    ProviderFixture.fail_catalog = False
+                    ProviderFixture.require_auth = False
+                    ProviderFixture.delay_messages = 0
 
 
 if __name__ == "__main__":

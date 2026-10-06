@@ -25,18 +25,24 @@ LM Studio must support its native v1 API and Anthropic Messages endpoint (0.4.1+
 - Python 3.9+ **only for the OpenAI adapter and Python tests**. Native Anthropic connections do not need Python.
 - Your second claude.ai account for the separate account login workflow.
 
-If the selected native runtime is not ready, the GUI shows its installation link and preparation instructions. The switcher does not silently install a runtime or download multi-gigabyte model weights.
+The selected native runtime's installation instructions can be expanded with **Показать установку и запуск движка**. Connection failures expand this help automatically. The switcher does not silently install a runtime or download multi-gigabyte model weights.
 
 ## Quick start
 
 Run `run_switcher_gui.cmd`. The Russian interface guides you through four required steps:
 
-1. **Сервер**: choose the runtime. Install/start [Ollama](https://ollama.com/download/windows) or [LM Studio](https://lmstudio.ai/download), download a model and enable the API server. Confirm runtime readiness, then click **Проверить сервер и найти модели**. Other compatible servers require their loopback URL. Connection errors keep later steps locked.
+1. **Сервер**: choose the runtime and click **Проверить сервер и найти модели**. The actual API request establishes readiness; no manual readiness checkbox is required. If needed, install/start [Ollama](https://ollama.com/download/windows) or [LM Studio](https://lmstudio.ai/download), download a model and enable the API server, then retry. Other compatible servers require their loopback URL. OpenAI additionally checks Python 3.9+ before proceeding and offers its installation link when missing. Connection errors keep later steps locked.
 2. **Модель**: select a model and click **Проверить и использовать модель**. Both a text response and a valid tool call must succeed before the `sonnet` mapping is saved and the account step opens. Optional context settings are collapsed and only available for native runtimes. Additional `opus`/`haiku` mappings and repeat diagnostics appear under additional parameters after the main model passes.
 3. **Аккаунт B**: click **Открыть вход в аккаунт B**, sign in inside the isolated VS Code window, then return and click **Проверить вход**. The switcher checks `claude auth status --json` using the isolated extension and account directory. Confirm that the reported account is your second account B before continuing. Use a separate browser profile or check the browser account before authorizing.
 4. **Проект и запуск**: select an existing separate project folder, then click **Открыть локальный VS Code**. Account identity, saved server, project overrides and model availability are checked again before launch. Confirm a real read/edit/command task while Desktop continues using account A.
 
-Each new GUI session starts with a server check. Editing a server/model invalidates its dependent checks; asynchronous completions from an older configuration cannot unlock the workflow. Only the current page is shown. Irrelevant controls are hidden, future steps are disabled, and the footer explains the next required action. Emergency unloading remains available during a pending request.
+Each new GUI session starts with a server check. Editing a server or changing the main model/context invalidates its dependent checks; reselecting the same model, sorting/filtering, and closing additional settings preserve the validated binding. Asynchronous completions from an older configuration cannot unlock the workflow. Only the current page is shown. Irrelevant controls are hidden, future steps are disabled, and the footer explains the next required action.
+
+Open dropdowns preview highlighted entries. **Enter** or selecting an item commits the choice; **Esc** or closing without committing restores the prior runtime, family or project. Merely browsing runtime choices does not reset the active setup. Each runtime's uncommitted address/token draft is retained in memory when switching dropdown choices; only a successful connection saves it. Idle polling does not rebuild the interface or revalidate project files while a menu is open.
+
+**Отменить проверку** cancels catalog/model/account requests without unloading the server. It immediately releases the UI while the old worker is stopped and reaped in the background. Emergency unloading remains independent and available during a pending request. A filtered empty catalog explains how to clear the filter; an actually empty server catalog explains how to add a model.
+
+VS Code startup is supervised: the launcher reports success only after the CLI accepts startup and, for OpenAI, the adapter is ready. Installation/startup errors return to the GUI instead of being hidden behind a premature success message. Account checks normalize inherited Windows environment casing (for example duplicate `Path`/`PATH`) inside a disposable child process and do not change the GUI or parent environment.
 
 The server token field appears only when **Сервер требует API-токен** is enabled, including after an authentication error. A local API token is separate from the Anthropic account login. Human sign-in remains manual; simultaneous account A/B operation must be confirmed on your installed extension version.
 
@@ -159,6 +165,7 @@ The **Токен локального сервера** field is the API credenti
 | `lmstudio_alias_switcher_gui.ps1` | Entry point and headless CLI |
 | `local_switcher_gui.ps1` | Guided WinForms UI; network work runs off the UI thread |
 | `gui_workflow.ps1` | Prerequisite policy and isolated account status checks |
+| `account_status.ps1` | Disposable account-check process and environment normalization |
 | `prepare_windows.ps1` | Isolated setup and runtime diagnostics |
 | `launch_claude_local_vscode.ps1` | Account B login/local launch and optional adapter lifecycle |
 | `openai_bridge.py` | Dependency-free local API translation |
@@ -174,7 +181,9 @@ pwsh -NoProfile -STA -File .\tests\test_gui_workflow.ps1
 python -m unittest discover -s tests -p "test_*.py" -v
 ```
 
-Tests cover numeric sorting/click direction, JSONC, argv escaping, isolated settings/environment, DPAPI, provider context calls, failed binding preservation, CLI exit codes, real HTTP fixture connections for all four providers, and adapter SSE/tool conversion. Workflow tests inspect actual WinForms controls, conditional visibility, prerequisite gating, account-directory checks, busy-state emergency access, and asynchronous model/tool success and failure. HTTP fixtures are **not** real model execution or proof of simultaneous account A/B login.
+Tests cover numeric sorting/click direction, JSONC, argv escaping, isolated settings/environment, DPAPI, provider context calls, failed binding preservation, CLI exit codes, real HTTP fixture connections for all four providers, and adapter SSE/tool conversion. Workflow tests inspect actual WinForms controls, conditional visibility, prerequisite gating, account-directory checks, busy-state emergency access, and asynchronous model/tool success and failure. Interactive component tests follow the actual button/selection handlers without manually setting readiness flags: dropdown preview/commit/cancel, model verification, an isolated fixture executable for account status, project changes and final preflight. Error tests cover 401 recovery, server recovery, cancelled delayed HTTP requests, unloading while busy, stale worker cleanup and the real launcher's failure report. The Python harness asserts that GUI HTTP tests really made their requests.
+
+These are component/integration tests using native controls and WinForms events, not physical mouse/keyboard end-to-end automation. The account fixture is explicitly synthetic: it exercises signed-out/signed-in/account-changed branches without signing into an actual Anthropic account. HTTP fixtures are **not** real model execution or proof of simultaneous account A/B login.
 
 A separate real-runtime smoke check used portable Ollama 0.35.1 and `qwen3:0.6b`: catalog/binding, a 32768-token context variant, text response, tool probe, SSE, and an actual bundled Claude Code CLI request reached the local model. The tiny model did not reliably follow the CLI instruction, so this verifies connectivity, not coding quality. Health probes disable thinking to avoid mistaking reasoning-only budget exhaustion for a broken endpoint.
 

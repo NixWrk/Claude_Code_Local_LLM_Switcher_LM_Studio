@@ -1,5 +1,6 @@
 param([string]$Repo = (Split-Path $PSScriptRoot -Parent), [string]$BaseUrl = '', [switch]$ExpectToolFailure)
 $ErrorActionPreference='Stop'
+$testEndpoint=$BaseUrl
 . (Join-Path $Repo 'local_switcher_core.ps1')
 . (Join-Path $Repo 'gui_workflow.ps1')
 $script:assertions=0
@@ -7,7 +8,9 @@ function Assert-Flow {param([bool]$Condition,[string]$Message);if (-not $Conditi
 $s=New-WorkflowState
 $s.ConnectionValid=$true
 $policy=Get-WorkflowPolicy $s
-Assert-Flow (-not $policy.CanCheckServer -and $policy.ShowInstall) 'Native installation path must precede server check'
+Assert-Flow ($policy.CanCheckServer -and -not $policy.ShowInstall) 'Connection requires a manual readiness checkbox or shows optional installation by default'
+$s.InstallHelp=$true
+Assert-Flow (Get-WorkflowPolicy $s).ShowInstall 'Installation help cannot be expanded'
 Assert-Flow (-not $policy.CanGoModel -and -not $policy.CanLaunch) 'Future steps unlocked before connection'
 $s.RuntimeReady=$true
 Assert-Flow (Get-WorkflowPolicy $s).CanCheckServer 'Prepared native runtime cannot be checked'
@@ -42,6 +45,9 @@ Assert-Flow ($auth.LoggedIn -and $auth.Email -eq 'b@example.test') 'Isolated Cla
 $refused=$false
 try {ConvertTo-IsolatedAccountStatus ([pscustomobject]@{loggedIn=$true;authMethod='claude.ai';configDirectory=(Join-Path $env:USERPROFILE '.claude')}) $authPaths | Out-Null} catch {$refused=$true}
 Assert-Flow $refused 'Main account directory accepted as isolated account B'
+$refused=$false
+try {Assert-OpenAiRuntime -PythonExecutable (Join-Path $tmp 'missing-python.exe') | Out-Null} catch {$refused=$_.Exception.Message -match 'PYTHON_GATE:'}
+Assert-Flow $refused 'Missing OpenAI adapter runtime is not detected'
 
 # Inspect the actual WinForms controls, including their hidden/disabled states.
 . (Join-Path $Repo 'lmstudio_alias_switcher_gui.ps1') -StateRoot $tmp -GuiTest -PreviewModelsFile (Join-Path $Repo 'tests\preview-models.json')
@@ -61,8 +67,8 @@ Assert-Flow ($contextRow.Visible -and -not $aliasRow.Visible) 'Context/additiona
 $script:flow.ModelValid=$true;Update-WorkflowUi
 Assert-Flow $aliasRow.Visible 'Additional families did not appear after main model verification'
 $aliasBox.SelectedIndex=1;$advancedModel.Checked=$false;Update-WorkflowUi
-Assert-Flow (-not $script:flow.ModelValid -and $aliasBox.SelectedItem -eq 'sonnet') 'Collapsing optional family controls kept a mismatched main model validation'
-$script:changing=$true;$backendBox.SelectedIndex=3;$script:changing=$false;Update-WorkflowUi
+Assert-Flow ($script:flow.ModelValid -and $aliasBox.SelectedItem -eq 'sonnet') 'Collapsing optional family controls invalidates the working main model'
+$backendBox.SelectedIndex=3;Update-WorkflowUi
 Assert-Flow (-not $contextRow.Visible) 'Generic server context still visible in real form'
 Assert-Flow (-not $advancedConnection.Visible) 'Generic server exposes an ineffective optional address checkbox'
 $script:flow.Busy='Verify';$script:runtimeTarget=New-Provider OpenAI;Update-WorkflowUi
@@ -71,8 +77,8 @@ Assert-Flow (-not $filterBox.Enabled) 'Busy model operation allows catalog/selec
 $script:flow.Busy='';$script:flow.ModelValid=$false;Update-WorkflowUi
 Assert-Flow (-not $stepButtons[2].Enabled -and -not $stepButtons[3].Enabled) 'Completion indiscriminately re-enabled future navigation'
 
-if ($BaseUrl) {
-    $script:changing=$true;$backendBox.SelectedIndex=0;$endpointBox.Text=$BaseUrl;$runtimeChoice.Checked=$true;$script:changing=$false
+if ($testEndpoint) {
+    $backendBox.SelectedIndex=0;$endpointBox.Text=$testEndpoint;$runtimeChoice.Checked=$true
     Reset-WorkflowServer $script:flow;Update-WorkflowUi
     Start-WorkflowJob 'Connect'
     $deadline=[DateTime]::UtcNow.AddSeconds(20)
