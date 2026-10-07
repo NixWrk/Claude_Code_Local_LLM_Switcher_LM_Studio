@@ -1,4 +1,4 @@
-param([string]$Repo = (Split-Path $PSScriptRoot -Parent), [string]$BaseUrl = '', [switch]$ExpectToolFailure)
+﻿param([string]$Repo = (Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'agents\claude'), [string]$BaseUrl = '', [switch]$ExpectToolFailure)
 $ErrorActionPreference='Stop'
 $testEndpoint=$BaseUrl
 . (Join-Path $Repo 'local_switcher_core.ps1')
@@ -50,7 +50,7 @@ try {Assert-OpenAiRuntime -PythonExecutable (Join-Path $tmp 'missing-python.exe'
 Assert-Flow $refused 'Missing OpenAI adapter runtime is not detected'
 
 # Inspect the actual WinForms controls, including their hidden/disabled states.
-. (Join-Path $Repo 'lmstudio_alias_switcher_gui.ps1') -StateRoot $tmp -GuiTest -PreviewModelsFile (Join-Path $Repo 'tests\preview-models.json')
+. (Join-Path $Repo 'lmstudio_alias_switcher_gui.ps1') -StateRoot $tmp -GuiTest -PreviewModelsFile (Join-Path $PSScriptRoot 'preview-models.json')
 $script:changing=$true
 $backendBox.SelectedIndex=0;$runtimeChoice.Checked=$true;$script:changing=$false
 Update-WorkflowUi

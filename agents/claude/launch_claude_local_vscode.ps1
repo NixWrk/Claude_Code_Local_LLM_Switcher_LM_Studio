@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$WorkspacePath = '', [string]$StateRoot = '',
     [switch]$LoginAccountB, [switch]$InstallExtension, [switch]$DryRun, [string]$ReadyFile=''
 )

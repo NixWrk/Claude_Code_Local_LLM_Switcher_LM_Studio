@@ -2,6 +2,7 @@
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import threading
 import unittest
@@ -9,7 +10,8 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2] / 'agents' / 'claude'
+TESTS = Path(__file__).resolve().parent
 
 
 class ProviderFixture(BaseHTTPRequestHandler):
@@ -89,6 +91,24 @@ class ProviderFixture(BaseHTTPRequestHandler):
 
 @unittest.skipUnless(os.name == "nt", "Windows PowerShell required")
 class PowerShellHttpTests(unittest.TestCase):
+    def test_python_discovery_selects_one_real_interpreter(self):
+        with tempfile.TemporaryDirectory() as state:
+            workflow = str(ROOT / "gui_workflow.ps1").replace("'", "''")
+            executable = sys.executable.replace("'", "''")
+            script = Path(state) / "python-discovery.ps1"
+            script.write_text(f""". '{workflow}'
+function Get-Command {{
+    param($Name,$CommandType,$ErrorAction)
+    [pscustomobject]@{{Source='C:\\Fixture\\WindowsApps\\python.exe'}}
+    [pscustomobject]@{{Source='{executable}'}}
+    [pscustomobject]@{{Source='C:\\Fixture\\another-python.exe'}}
+}}
+Assert-OpenAiRuntime
+""", encoding="utf-8-sig")
+            result = subprocess.run(["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script)], capture_output=True, timeout=15)
+            self.assertEqual(result.returncode, 0, result.stderr.decode(errors="replace"))
+            self.assertEqual(result.stdout.decode(errors="replace").strip(), sys.executable)
+
     def setUp(self):
         ProviderFixture.requests = []
     @classmethod
@@ -141,8 +161,17 @@ class PowerShellHttpTests(unittest.TestCase):
             self.assertIn(b"fixture:latest", result.stdout)
             self.assertNotIn(b"fixture:cloud", result.stdout)
 
+    def test_headless_entry_point_from_other_directory(self):
+        with tempfile.TemporaryDirectory() as state:
+            result = subprocess.run(["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+                str(ROOT / "lmstudio_alias_switcher_gui.ps1"), "-Headless", "-StateRoot", state,
+                "-Backend", "Ollama", "-BaseUrl", self.base, "-ListModels"], capture_output=True, timeout=30, cwd=state)
+            self.assertEqual(result.returncode, 0, result.stderr.decode(errors="replace"))
+            self.assertIn(b"fixture:latest", result.stdout)
+            self.assertIn(("GET", "/api/tags"), ProviderFixture.requests)
+
     def test_guided_gui_async_connection_and_model_checks(self):
-        result = subprocess.run(["powershell.exe", "-NoProfile", "-STA", "-ExecutionPolicy", "Bypass", "-File", str(ROOT / "tests" / "test_gui_workflow.ps1"), "-BaseUrl", self.base], capture_output=True, timeout=50)
+        result = subprocess.run(["powershell.exe", "-NoProfile", "-STA", "-ExecutionPolicy", "Bypass", "-File", str(TESTS / "test_gui_workflow.ps1"), "-BaseUrl", self.base], capture_output=True, timeout=50)
         self.assertEqual(result.returncode, 0, result.stderr.decode(errors="replace"))
         self.assertIn(b"PASS:", result.stdout)
         self.assertIn(("GET", "/api/v1/models"), ProviderFixture.requests)
@@ -167,7 +196,7 @@ class PowerShellHttpTests(unittest.TestCase):
     def test_guided_gui_tool_failure_preserves_mapping_and_gates(self):
         ProviderFixture.fail_tools = True
         try:
-            result = subprocess.run(["powershell.exe", "-NoProfile", "-STA", "-ExecutionPolicy", "Bypass", "-File", str(ROOT / "tests" / "test_gui_workflow.ps1"), "-BaseUrl", self.base, "-ExpectToolFailure"], capture_output=True, timeout=50)
+            result = subprocess.run(["powershell.exe", "-NoProfile", "-STA", "-ExecutionPolicy", "Bypass", "-File", str(TESTS / "test_gui_workflow.ps1"), "-BaseUrl", self.base, "-ExpectToolFailure"], capture_output=True, timeout=50)
             self.assertEqual(result.returncode, 0, result.stderr.decode(errors="replace"))
             self.assertIn(b"PASS:", result.stdout)
             self.assertIn(("POST", "/v1/messages"), ProviderFixture.requests)
@@ -177,7 +206,7 @@ class PowerShellHttpTests(unittest.TestCase):
     def test_interactive_flow_all_providers(self):
         for backend in ("LMStudio", "Ollama", "Anthropic", "OpenAI"):
             with self.subTest(backend=backend):
-                result = subprocess.run(["powershell.exe", "-NoProfile", "-STA", "-ExecutionPolicy", "Bypass", "-File", str(ROOT / "tests" / "test_interactive_flow.ps1"), "-BaseUrl", self.base, "-Backend", backend], capture_output=True, timeout=60)
+                result = subprocess.run(["powershell.exe", "-NoProfile", "-STA", "-ExecutionPolicy", "Bypass", "-File", str(TESTS / "test_interactive_flow.ps1"), "-BaseUrl", self.base, "-Backend", backend], capture_output=True, timeout=60)
                 self.assertEqual(result.returncode, 0, result.stderr.decode(errors="replace"))
                 self.assertIn(b"interactive flow checks", result.stdout)
 
@@ -189,7 +218,7 @@ class PowerShellHttpTests(unittest.TestCase):
                 ProviderFixture.delay_messages = 3 if scenario in ("Cancel", "Unload") else 0
                 ProviderFixture.requests = []
                 try:
-                    result = subprocess.run(["powershell.exe", "-NoProfile", "-STA", "-ExecutionPolicy", "Bypass", "-File", str(ROOT / "tests" / "test_interactive_errors.ps1"), "-BaseUrl", self.base, "-Scenario", scenario], capture_output=True, timeout=45)
+                    result = subprocess.run(["powershell.exe", "-NoProfile", "-STA", "-ExecutionPolicy", "Bypass", "-File", str(TESTS / "test_interactive_errors.ps1"), "-BaseUrl", self.base, "-Scenario", scenario], capture_output=True, timeout=45)
                     self.assertEqual(result.returncode, 0, result.stderr.decode(errors="replace"))
                     self.assertIn(b"PASS:", result.stdout)
                 finally:

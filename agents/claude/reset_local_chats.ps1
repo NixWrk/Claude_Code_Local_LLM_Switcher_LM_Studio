@@ -1,4 +1,4 @@
-param([string]$StateRoot = '', [switch]$DryRun)
+﻿param([string]$StateRoot = '', [switch]$DryRun)
 $ErrorActionPreference='Stop'
 . (Join-Path $PSScriptRoot 'local_switcher_core.ps1')
 try {

@@ -1,4 +1,4 @@
-﻿param([string]$Repo=(Split-Path $PSScriptRoot -Parent),[string]$BaseUrl,[ValidateSet('Offline','Auth','Cancel','Unload')][string]$Scenario)
+﻿param([string]$Repo=(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'agents\claude'),[string]$BaseUrl,[ValidateSet('Offline','Auth','Cancel','Unload')][string]$Scenario)
 $ErrorActionPreference='Stop';$testEndpoint=$BaseUrl;$testScenario=$Scenario
 $testRoot=Join-Path ([IO.Path]::GetTempPath()) ('switcher-errors-' + [guid]::NewGuid().ToString('N'))
 $script:checks=0

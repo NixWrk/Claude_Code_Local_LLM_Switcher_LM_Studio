@@ -12,13 +12,19 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2] / 'agents' / 'claude'
+TESTS = Path(__file__).resolve().parent
 spec = importlib.util.spec_from_file_location("bridge", ROOT / "openai_bridge.py")
 bridge = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(bridge)
 
 
 class ConversionTests(unittest.TestCase):
+    def test_module_cli(self):
+        result = subprocess.run([sys.executable, str(ROOT / "openai_bridge.py"), "--help"], capture_output=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr.decode(errors="replace"))
+        self.assertIn(b"--config", result.stdout)
+
     def test_tool_round_trip(self):
         body = {"model": "local", "max_tokens": 100, "system": [{"type": "text", "text": "rules"}], "messages": [
             {"role": "assistant", "content": [{"type": "tool_use", "id": "call_1", "name": "read_file", "input": {"path": "x.py"}}]},

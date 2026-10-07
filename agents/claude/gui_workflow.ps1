@@ -131,7 +131,11 @@ function Start-IsolatedLauncher {
 
 function Assert-OpenAiRuntime {
     param([string]$PythonExecutable='')
-    if (-not $PythonExecutable) {$command=Get-Command python -CommandType Application -ErrorAction SilentlyContinue;if ($command) {$PythonExecutable=$command.Source}}
+    if (-not $PythonExecutable) {
+        $command=Get-Command python -CommandType Application -ErrorAction SilentlyContinue |
+            Where-Object {$_.Source -notmatch '\\WindowsApps\\python(?:3)?\.exe$'} | Select-Object -First 1
+        if ($command) {$PythonExecutable=$command.Source}
+    }
     $message='PYTHON_GATE: Для OpenAI API нужен Python 3.9 или новее. Установите Python с добавлением в PATH и повторите проверку сервера.'
     if (-not $PythonExecutable -or -not (Test-Path -LiteralPath $PythonExecutable -PathType Leaf) -or $PythonExecutable -match '\\WindowsApps\\python(?:3)?\.exe$') {throw $message}
     $start=New-Object Diagnostics.ProcessStartInfo

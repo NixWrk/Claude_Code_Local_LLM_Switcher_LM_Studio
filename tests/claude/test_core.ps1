@@ -1,4 +1,4 @@
-param([string]$Repo = (Split-Path $PSScriptRoot -Parent))
+﻿param([string]$Repo = (Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'agents\claude'))
 $ErrorActionPreference='Stop'
 . (Join-Path $Repo 'local_switcher_core.ps1')
 $script:checks=0

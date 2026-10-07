@@ -1,98 +1,16 @@
-Set-StrictMode -Version 2.0
-
-function Get-Field {
-    param($Object, [string]$Name, $Default = $null)
-    if ($null -ne $Object -and $null -ne $Object.PSObject.Properties[$Name]) { return $Object.$Name }
-    return $Default
-}
-
-function Set-Field {
-    param($Object, [string]$Name, $Value)
-    if ($null -ne $Object.PSObject.Properties[$Name]) { $Object.$Name = $Value }
-    else { $Object | Add-Member -NotePropertyName $Name -NotePropertyValue $Value }
-}
-
-function ConvertFrom-Jsonc {
-    param([string]$Text)
-    # A scanner preserves URLs, escaped quotes and comment-like text inside strings.
-    $out = New-Object System.Text.StringBuilder
-    $quoted = $false; $escaped = $false
-    for ($i = 0; $i -lt $Text.Length; $i++) {
-        $c = $Text[$i]
-        if ($quoted) {
-            [void]$out.Append($c)
-            if ($escaped) { $escaped = $false }
-            elseif ($c -eq '\') { $escaped = $true }
-            elseif ($c -eq '"') { $quoted = $false }
-            continue
-        }
-        if ($c -eq '"') { $quoted = $true; [void]$out.Append($c); continue }
-        if ($c -eq '/' -and $i + 1 -lt $Text.Length) {
-            if ($Text[$i + 1] -eq '/') {
-                while ($i -lt $Text.Length -and $Text[$i] -ne "`n") { $i++ }
-                [void]$out.Append("`n"); continue
-            }
-            if ($Text[$i + 1] -eq '*') {
-                $i += 2
-                while ($i + 1 -lt $Text.Length -and -not ($Text[$i] -eq '*' -and $Text[$i + 1] -eq '/')) { $i++ }
-                if ($i + 1 -ge $Text.Length) { throw 'Unterminated JSONC comment.' }
-                $i++; [void]$out.Append(' '); continue
-            }
-        }
-        [void]$out.Append($c)
-    }
-    if ($quoted) { throw 'Unterminated JSON string.' }
-    $clean = $out.ToString(); $out.Clear() | Out-Null
-    $quoted = $false; $escaped = $false
-    for ($i = 0; $i -lt $clean.Length; $i++) {
-        $c = $clean[$i]
-        if (-not $quoted -and $c -eq ',') {
-            $j = $i + 1
-            while ($j -lt $clean.Length -and [char]::IsWhiteSpace($clean[$j])) { $j++ }
-            if ($j -lt $clean.Length -and $clean[$j] -in @('}', ']')) { continue }
-        }
-        [void]$out.Append($c)
-        if ($quoted -and $escaped) { $escaped = $false }
-        elseif ($quoted -and $c -eq '\') { $escaped = $true }
-        elseif ($c -eq '"') { $quoted = -not $quoted }
-    }
-    return ($out.ToString() | ConvertFrom-Json)
-}
-
-function Read-JsonFile {
-    param([string]$Path)
-    if (-not (Test-Path -LiteralPath $Path)) { return [pscustomobject]@{} }
-    $raw = [IO.File]::ReadAllText($Path)
-    if (-not $raw.Trim()) { return [pscustomobject]@{} }
-    try { return ConvertFrom-Jsonc $raw } catch { throw "Invalid JSON in $Path : $($_.Exception.Message)" }
-}
-
-function Write-JsonFile {
-    param([string]$Path, $Object)
-    $dir = Split-Path -Parent $Path
-    [void][IO.Directory]::CreateDirectory($dir)
-    $temporary = Join-Path $dir ([IO.Path]::GetRandomFileName())
-    try {
-        [IO.File]::WriteAllText($temporary, ($Object | ConvertTo-Json -Depth 60), (New-Object Text.UTF8Encoding($false)))
-        if (Test-Path -LiteralPath $Path) {
-            [IO.File]::Replace($temporary, $Path, ($Path + '.bak'))
-        } else { [IO.File]::Move($temporary, $Path) }
-    } finally { if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force } }
-}
+﻿Set-StrictMode -Version 2.0
+$sharedRoot = Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'shared'
+. (Join-Path $sharedRoot 'json.ps1')
+. (Join-Path $sharedRoot 'profiles.ps1')
+. (Join-Path $sharedRoot 'vscode.ps1')
 
 function Get-StatePaths {
     param([string]$StateRoot = '')
-    if (-not $StateRoot) { $StateRoot = Join-Path $env:LOCALAPPDATA 'ClaudeLocalSwitcher\account-b' }
+    if (-not $StateRoot) { $StateRoot = Join-Path (Get-AgentProfilesRoot Claude) 'account-b' }
     $root = [IO.Path]::GetFullPath($StateRoot)
-    $mainClaude = [IO.Path]::GetFullPath((Join-Path $env:USERPROFILE '.claude'))
-    $mainCode = [IO.Path]::GetFullPath((Join-Path $env:APPDATA 'Code'))
-    foreach ($protectedRoot in @($mainClaude, $mainCode)) {
-        if ($root -eq $protectedRoot -or $root.StartsWith($protectedRoot.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) {
-            throw 'StateRoot must be separate from your main Claude and VS Code directories.'
-        }
-    }
+    Assert-IsolatedStatePath $root
     [pscustomobject]@{
-        Root = $root; Config = (Join-Path $root 'switcher.json')
+        Root = $root; Name = (Split-Path $root -Leaf); Config = (Join-Path $root 'switcher.json')
         Claude = (Join-Path $root 'claude'); Code = (Join-Path $root 'vscode-local')
         LoginCode = (Join-Path $root 'vscode-login'); Extensions = (Join-Path $root 'extensions')
     }
@@ -366,69 +284,13 @@ function Update-IsolatedCodeSettings {
     foreach ($key in $Variables.Keys) { $envList += [pscustomobject]@{name=$key;value=[string]$Variables[$key]} }
     Set-Field $settings 'claudeCode.environmentVariables' $envList
     Set-Field $settings 'claudeCode.disableLoginPrompt' (-not [bool]$Login)
-    Set-Field $settings 'window.title' $(if ($Login) {'Account B - sign in | ${appName}'} else {'LOCAL MODELS - Account B | ${rootName} | ${appName}'})
+    Set-Field $settings 'window.title' $(if ($Login) {($Paths.Name + ' - sign in | ${appName}')} else {('LOCAL MODELS - ' + $Paths.Name + ' | ${rootName} | ${appName}')})
     Write-JsonFile $settingsPath $settings
-}
-
-function Resolve-CodeExecutable {
-    $command=Get-Command code -ErrorAction SilentlyContinue
-    if ($command) {
-        $exe=Join-Path (Split-Path (Split-Path $command.Source -Parent) -Parent) 'Code.exe'
-        if (Test-Path -LiteralPath $exe) { return $exe }
-    }
-    foreach ($path in @((Join-Path $env:LOCALAPPDATA 'Programs\Microsoft VS Code\Code.exe'),(Join-Path ${env:ProgramFiles} 'Microsoft VS Code\Code.exe'))) {
-        if (Test-Path -LiteralPath $path) {return $path}
-    }
-    throw 'VS Code Code.exe was not found.'
-}
-
-function ConvertTo-ProcessArgument {
-    param([AllowEmptyString()][string]$Value)
-    # Windows CommandLineToArgvW quoting, including trailing backslashes.
-    return '"' + ([regex]::Replace([regex]::Replace($Value, '(\\*)"', '$1$1\"'), '(\\+)$', '$1$1')) + '"'
-}
-
-function Start-CodeCli {
-    param([string]$Executable, [string[]]$Arguments, [switch]$Wait)
-    $installRoot=Split-Path $Executable -Parent
-    $candidates=@((Join-Path $installRoot 'resources\app\out\cli.js'))
-    foreach ($dir in @(Get-ChildItem -LiteralPath $installRoot -Directory)) {$candidates += (Join-Path $dir.FullName 'resources\app\out\cli.js')}
-    $cli=$candidates | Where-Object {Test-Path -LiteralPath $_} | Select-Object -First 1
-    if (-not $cli) {throw 'VS Code CLI entry point was not found.'}
-    $electron=[Environment]::GetEnvironmentVariable('ELECTRON_RUN_AS_NODE','Process')
-    $dev=[Environment]::GetEnvironmentVariable('VSCODE_DEV','Process')
-    try {
-        $env:ELECTRON_RUN_AS_NODE='1'; [Environment]::SetEnvironmentVariable('VSCODE_DEV',$null,'Process')
-        $args=@($cli) + $Arguments
-        $process=Start-Process -FilePath $Executable -ArgumentList (($args | ForEach-Object {ConvertTo-ProcessArgument $_}) -join ' ') -WindowStyle Hidden -PassThru
-        if ($Wait) {$process.WaitForExit()}
-        return $process
-    } finally {
-        [Environment]::SetEnvironmentVariable('ELECTRON_RUN_AS_NODE',$electron,'Process')
-        [Environment]::SetEnvironmentVariable('VSCODE_DEV',$dev,'Process')
-    }
-}
-
-function Get-ProcessEnvironmentSnapshot {
-    return [Environment]::GetEnvironmentVariables('Process')
 }
 
 function Set-IsolatedProcessEnvironment {
     param($Variables)
-    foreach ($key in @([Environment]::GetEnvironmentVariables('Process').Keys)) {
-        if ($key -match '^(ANTHROPIC_|CLAUDE_CODE_|CLAUDE_CONFIG_DIR|OLLAMA_|LM_API_TOKEN|DISABLE_COMPACT|ENABLE_PROMPT_CACHING|DISABLE_PROMPT_CACHING)') {
-            [Environment]::SetEnvironmentVariable($key,$null,'Process')
-        }
-    }
-    foreach ($key in $Variables.Keys) { [Environment]::SetEnvironmentVariable($key,[string]$Variables[$key],'Process') }
-}
-
-function Restore-ProcessEnvironment {
-    param($Snapshot)
-    foreach ($key in @([Environment]::GetEnvironmentVariables('Process').Keys)) {
-        if (-not $Snapshot.Contains($key)) { [Environment]::SetEnvironmentVariable($key,$null,'Process') }
-    }
-    foreach ($key in $Snapshot.Keys) { [Environment]::SetEnvironmentVariable($key,[string]$Snapshot[$key],'Process') }
+    Set-AgentProcessEnvironment $Variables
 }
 
 . (Join-Path $PSScriptRoot 'runtime_control.ps1')

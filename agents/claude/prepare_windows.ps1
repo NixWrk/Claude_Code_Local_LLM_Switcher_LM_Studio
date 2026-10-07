@@ -1,4 +1,4 @@
-param(
+﻿param(
     [ValidateSet('LMStudio','Ollama','Anthropic','OpenAI')][string]$Backend = '',
     [string]$BaseUrl = '', [string]$AuthToken = '', [string]$StateRoot = '', [string]$WorkspacePath = '',
     [switch]$InstallExtension, [switch]$DryRun
@@ -38,6 +38,6 @@ try {
         & (Join-Path $PSScriptRoot 'launch_claude_local_vscode.ps1') -StateRoot $paths.Root -LoginAccountB -InstallExtension
         if ($LASTEXITCODE -ne 0) {throw 'Isolated VS Code setup failed.'}
     }
-    Write-Output 'Next: run_login_account_b.cmd, bind a sonnet model in run_switcher_gui.cmd, then select a registered project.'
+    Write-Output 'Next: open START-HERE.cmd, choose Claude Code, sign in to this profile and configure a local model in its GUI.'
 } catch {Write-Error $_ -ErrorAction Continue; exit 1}
 exit 0

@@ -1,4 +1,4 @@
-# Emergency unloading runs independently of catalog/binding workers.
+﻿# Emergency unloading runs independently of catalog/binding workers.
 function Get-LocalListenerIds {
     param([int]$Port)
     $netstat=Join-Path $env:SystemRoot 'System32\netstat.exe'

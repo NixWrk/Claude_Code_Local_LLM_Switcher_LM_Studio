@@ -1,10 +1,22 @@
-﻿param([string]$Repo=(Split-Path $PSScriptRoot -Parent),[string]$BaseUrl,[ValidateSet('LMStudio','Ollama','Anthropic','OpenAI')][string]$Backend='LMStudio')
+﻿param([string]$Repo=(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'agents\claude'),[string]$BaseUrl,[ValidateSet('LMStudio','Ollama','Anthropic','OpenAI')][string]$Backend='LMStudio')
 $ErrorActionPreference='Stop'
 $testEndpoint=$BaseUrl
 $testBackend=$Backend
 $testRoot=Join-Path ([IO.Path]::GetTempPath()) ('switcher-interactive-' + [guid]::NewGuid().ToString('N'))
 $script:checks=0
 function Check {param([bool]$Ok,[string]$Message);if(-not $Ok){throw $Message};$script:checks++}
+function Open-Choice {
+    param($Combo)
+    # Native popups require focus; settle queued focus events before opening.
+    $form.Activate()
+    [void]$Combo.Focus()
+    for ($i=0;$i -lt 5;$i++) {
+        [Windows.Forms.Application]::DoEvents()
+        Start-Sleep -Milliseconds 20
+    }
+    $Combo.DroppedDown=$true
+    Check $Combo.DroppedDown 'Dropdown did not open before its interaction test'
+}
 function Commit-Choice {
     param($Combo)
     # Trigger the same WinForms event raised by Enter or clicking a menu item.
@@ -30,7 +42,7 @@ try {
     $form.Show();[Windows.Forms.Application]::DoEvents()
     Capture-Form 'server'
     Check $connectButton.Enabled 'Server check requires a manual readiness checkbox'
-    $backendBox.DroppedDown=$true
+    Open-Choice $backendBox
     for($i=0;$i -lt 5;$i++){Poll-WorkflowJobs;[Windows.Forms.Application]::DoEvents();Start-Sleep -Milliseconds 20}
     Check $backendBox.DroppedDown 'Idle refresh closes the runtime dropdown'
     $backendBox.DroppedDown=$false
@@ -45,7 +57,7 @@ try {
     Capture-Form 'model'
     $stepButtons[0].PerformClick();[Windows.Forms.Application]::DoEvents()
     $generation=$script:flow.Generation;$originalIndex=$backendBox.SelectedIndex
-    $backendBox.DroppedDown=$true;$backendBox.SelectedIndex=($originalIndex+1)%4;[Windows.Forms.Application]::DoEvents()
+    Open-Choice $backendBox;$backendBox.SelectedIndex=($originalIndex+1)%4;[Windows.Forms.Application]::DoEvents()
     Check ($script:flow.Generation -eq $generation -and $script:flow.ModelValid) 'Arrow-style preview in runtime dropdown invalidates the active model before commit'
     $backendBox.DroppedDown=$false;[Windows.Forms.Application]::DoEvents()
     Check ($backendBox.SelectedIndex -eq $originalIndex -and $script:flow.Generation -eq $generation -and $script:flow.ModelValid) 'Cancelling runtime dropdown does not restore selection/readiness'
@@ -59,13 +71,13 @@ try {
     $list.SelectedItems.Clear();$list.Items[0].Selected=$true;[Windows.Forms.Application]::DoEvents()
     Check $script:flow.ModelValid 'Reselecting the verified model loses validation'
     $advancedModel.Checked=$true
-    $aliasBox.DroppedDown=$true
+    Open-Choice $aliasBox
     $aliasBox.SelectedItem='opus'
     Poll-WorkflowJobs;[Windows.Forms.Application]::DoEvents()
     Check $aliasBox.DroppedDown 'Idle refresh closes the family dropdown'
     $aliasBox.DroppedDown=$false
     Check ($aliasBox.SelectedItem -eq 'sonnet' -and $script:flow.ModelValid) 'Cancelled role preview changes the applied family'
-    $aliasBox.DroppedDown=$true;$aliasBox.SelectedItem='opus';Commit-Choice $aliasBox;$aliasBox.DroppedDown=$false
+    Open-Choice $aliasBox;$aliasBox.SelectedItem='opus';Commit-Choice $aliasBox;$aliasBox.DroppedDown=$false
     Check ($script:selectedAlias -eq 'opus' -and $script:flow.ModelValid) 'Committed role choice is lost on dropdown close'
     $advancedModel.Checked=$false;[Windows.Forms.Application]::DoEvents()
     Check $script:flow.ModelValid 'Closing optional settings invalidates the working main model'
@@ -100,13 +112,13 @@ try {
     $project1=Join-Path $testRoot 'Separate project one';$project2=Join-Path $testRoot 'Separate project two'
     [void][IO.Directory]::CreateDirectory($project1);[void][IO.Directory]::CreateDirectory($project2)
     Register-WorkflowProject $project1;Register-WorkflowProject $project2
-    $projectBox.DroppedDown=$true;Poll-WorkflowJobs;[Windows.Forms.Application]::DoEvents()
+    Open-Choice $projectBox;Poll-WorkflowJobs;[Windows.Forms.Application]::DoEvents()
     Check $projectBox.DroppedDown 'Idle refresh closes project dropdown'
     $projectBox.SelectedItem=$project1
     Check ($script:selectedProject -eq $project2 -and $projectSummary.Text.Contains($project2)) 'Project preview prematurely changes launch target'
     $projectBox.DroppedDown=$false
     Check ($projectBox.SelectedItem -eq $project2) 'Cancelling project dropdown does not restore the previous project'
-    $projectBox.DroppedDown=$true;$projectBox.SelectedItem=$project1;Commit-Choice $projectBox;$projectBox.DroppedDown=$false;[Windows.Forms.Application]::DoEvents()
+    Open-Choice $projectBox;$projectBox.SelectedItem=$project1;Commit-Choice $projectBox;$projectBox.DroppedDown=$false;[Windows.Forms.Application]::DoEvents()
     Check ($script:flow.ProjectValid -and $launchButton.Enabled -and $projectSummary.Text.Contains($project1)) 'Project dropdown choice does not update the launch target'
     $projectBox.SelectedItem=$project2;$projectBox.SelectedItem=$project1;[Windows.Forms.Application]::DoEvents()
     Check ($script:flow.ProjectValid -and $launchButton.Enabled) 'Repeated project dropdown changes lose readiness'
@@ -118,7 +130,7 @@ try {
     Check ($script:flow.Step -eq 3 -and -not $script:flow.AccountValid -and -not $launchButton.Enabled) 'Launch does not catch account sign-out before spawning VS Code'
     $stepButtons[0].PerformClick();[Windows.Forms.Application]::DoEvents()
     if($backendBox.SelectedItem -eq 'Ollama'){$backendBox.SelectedItem='LM Studio'}
-    $backendBox.DroppedDown=$true;$backendBox.SelectedItem='Ollama';Commit-Choice $backendBox;$backendBox.DroppedDown=$false;[Windows.Forms.Application]::DoEvents()
+    Open-Choice $backendBox;$backendBox.SelectedItem='Ollama';Commit-Choice $backendBox;$backendBox.DroppedDown=$false;[Windows.Forms.Application]::DoEvents()
     Check (-not $script:flow.ServerValid -and -not $script:flow.ModelValid) 'Switching providers kept validation'
     Check ($null -eq $script:runtimeTarget -or $script:runtimeTarget.Kind -eq 'Ollama') 'Unload still targets the previously selected engine'
     Check ($endpointBox.Text -eq $(if($testBackend -eq 'Ollama'){$testEndpoint}else{'http://localhost:11434'})) 'Wrong URL after selecting Ollama'

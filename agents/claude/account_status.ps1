@@ -1,4 +1,4 @@
-param([string]$StateRoot='')
+﻿param([string]$StateRoot='')
 $ErrorActionPreference='Stop'
 [Console]::OutputEncoding=New-Object Text.UTF8Encoding($false)
 try {

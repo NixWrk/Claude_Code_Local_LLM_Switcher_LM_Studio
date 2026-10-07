@@ -12,7 +12,7 @@ $script:updatingUi=$false;$script:updateUiPending=$false
 $script:mainValidation=$null;$script:bindingsCache=$config.bindings;$script:draftProvider=$null;$script:draftError='';$script:cancelledJobs=@()
 $script:providerDrafts=@{};$script:selectedBackendKind=$provider.Kind
 $form=New-Object Windows.Forms.Form
-$form.Text='Claude Code — локальные модели и аккаунт B'
+$form.Text=('Claude Code — локальные модели | ' + $paths.Name)
 $workArea=[Windows.Forms.Screen]::PrimaryScreen.WorkingArea
 $form.ClientSize=New-Object Drawing.Size([math]::Min(1120,$workArea.Width-80),[math]::Min(760,$workArea.Height-80))
 $form.MinimumSize=New-Object Drawing.Size([math]::Min(900,$workArea.Width-40),[math]::Min(650,$workArea.Height-40))
@@ -74,7 +74,7 @@ $targetTip=New-Object Windows.Forms.ToolTip
 $root.Controls.Add($header,0,0)
 $nav=New-UiRow $null;$nav.Dock='Fill'
 $stepButtons=@()
-foreach ($caption in @('1. Сервер','2. Модель','3. Аккаунт B','4. Проект и запуск')) {$stepButtons += New-UiButton $nav $caption 230}
+foreach ($caption in @('1. Сервер','2. Модель','3. Аккаунт','4. Проект и запуск')) {$stepButtons += New-UiButton $nav $caption 230}
 $root.Controls.Add($nav,0,1)
 $pageHost=New-Object Windows.Forms.Panel;$pageHost.Dock='Fill';$root.Controls.Add($pageHost,0,2)
 $pages=@();for ($i=0;$i -lt 4;$i++) {$pages += New-UiPage;$pageHost.Controls.Add($pages[$i])}
@@ -128,10 +128,10 @@ $diagnosticsRow=New-UiRow $pages[1];$testButton=New-UiButton $diagnosticsRow 'П
 
 # Step 3: account identity is read from the isolated CLI, not inferred from an API token.
 [void](New-UiLabel $pages[2] 'Войдите в отдельный аккаунт Anthropic' -Heading)
-[void](New-UiLabel $pages[2] 'Откроется отдельное окно VS Code для входа. Выберите второй аккаунт B в браузере, завершите вход в Claude Code и вернитесь сюда. Основной аккаунт и его настройки сохраняются отдельно.')
-$accountRow=New-UiRow $pages[2];$loginButton=New-UiButton $accountRow 'Открыть вход в аккаунт B' 280;$checkAccountButton=New-UiButton $accountRow 'Проверить вход' 190
+[void](New-UiLabel $pages[2] 'Откроется отдельное окно VS Code для входа. Выберите нужный аккаунт в браузере, завершите вход в Claude Code и вернитесь сюда. Основной аккаунт и его настройки сохраняются отдельно.')
+$accountRow=New-UiRow $pages[2];$loginButton=New-UiButton $accountRow 'Открыть вход в аккаунт профиля' 280;$checkAccountButton=New-UiButton $accountRow 'Проверить вход' 190
 $accountLabel=New-UiLabel $pages[2] 'Вход в отдельном профиле пока не проверен.'
-$identityCheck=New-UiCheck $pages[2] 'Подтверждаю: это мой отдельный аккаунт B'
+$identityCheck=New-UiCheck $pages[2] 'Подтверждаю: это мой отдельный аккаунт профиля'
 [void](New-UiLabel $pages[2] 'API-токен локального сервера относится к шагу 1. Здесь проверяется авторизация claude.ai в отдельном каталоге настроек.')
 
 # Step 4: registered project selection and final preflight are mandatory.
@@ -270,14 +270,14 @@ function Update-WorkflowControls {
     $backButton.Visible=$script:flow.Step -gt 1;$backButton.Enabled=$idle
     $nextButton.Visible=$script:flow.Step -lt 4
     $nextButton.Enabled=switch ($script:flow.Step) {1 {$policy.CanGoModel} 2 {$policy.CanGoAccount} 3 {$policy.CanGoProject} default {$false}}
-    $nextButton.Text=switch ($script:flow.Step) {1 {'Далее: модель'} 2 {'Далее: аккаунт B'} 3 {'Далее: проект'} default {'Далее'}}
+    $nextButton.Text=switch ($script:flow.Step) {1 {'Далее: модель'} 2 {'Далее: аккаунт профиля'} 3 {'Далее: проект'} default {'Далее'}}
     $emptyModelHelp.Visible=$list.Items.Count -eq 0
     $emptyModelHelp.Text=if ($script:flow.ModelCount -eq 0) {'Каталог сервера пуст. Скачайте или импортируйте модель в выбранном движке, затем обновите список.'} else {'По этому фильтру моделей нет. Очистите фильтр, чтобы вернуть список.'}
     $modelHelp.Text=if ($script:flow.Backend -in @('LMStudio','Ollama')) {'Выберите модель. Проверяются текстовый ответ и вызов инструмента. Для Claude Code по умолчанию запрашивается контекст 32 768; размер можно изменить в дополнительных параметрах.'} else {'Выберите модель. Проверяются текстовый ответ и вызов инструмента. Контекст задаётся в самом сервере; неподдерживаемые настройки здесь скрыты.'}
-    $projectSummary.Text="Сервер: $($script:activeProvider.Kind) — $($script:activeProvider.BaseUrl)`r`nАккаунт B: $($script:flow.AccountEmail)`r`nПроект: $($script:selectedProject)`r`nЗапуск использует отдельные настройки, историю и расширение Claude Code."
+    $projectSummary.Text="Сервер: $($script:activeProvider.Kind) — $($script:activeProvider.BaseUrl)`r`nАккаунт: $($script:flow.AccountEmail)`r`nПроект: $($script:selectedProject)`r`nЗапуск использует отдельные настройки, историю и расширение Claude Code."
     $status.ForeColor=if ($script:flow.Error) {[Drawing.Color]::DarkRed} else {[Drawing.SystemColors]::ControlText}
     $busyText=switch ($script:flow.Busy) {'Connect' {'Получаем каталог моделей от сервера…'} 'Verify' {'Загружаем модель и проверяем текстовый ответ и инструменты. Первая загрузка может занять несколько минут.'} 'Account' {'Проверяем вход в отдельном профиле Anthropic…'} 'Login' {'Подготавливаем отдельный VS Code для входа. При первом запуске устанавливается расширение Claude Code.'} 'Launch' {'Проверяем настройки и запускаем отдельный VS Code…'} default {'Проверяем ответ модели…'}}
-    $status.Text=if ($script:flow.Unloading) {'Выгружаются модели. Если сервер не отвечает, его процессы будут остановлены.'} elseif ($script:flow.Busy) {$busyText} elseif ($script:flow.Error) {$script:flow.Error} elseif ($script:flow.Step -eq 1 -and -not $script:flow.ConnectionValid) {$script:draftError} elseif ($script:flow.Step -eq 1 -and -not $script:flow.TokenReady) {'Введите API-токен локального сервера или отключите требование токена, если авторизация сервера выключена.'} elseif ($script:flow.Notice) {$script:flow.Notice} else {switch ($script:flow.Step) {1 {'Нажмите «Проверить сервер и найти модели». Установка нужна только если движок отсутствует.'} 2 {if ($script:flow.ModelValid) {'Основная модель проверена. Можно перейти к аккаунту B.'} else {'Выберите модель и нажмите «Проверить и использовать модель».'}} 3 {if ($script:flow.AccountValid) {'Подтвердите, что обнаруженная учётная запись — ваш отдельный аккаунт B.'} else {'Войдите в аккаунт B и нажмите «Проверить вход».'}} 4 {if ($script:flow.ProjectValid) {'Все обязательные шаги выполнены. Можно открыть локальный VS Code.'} else {'Выберите существующую отдельную папку проекта.'}}}}
+    $status.Text=if ($script:flow.Unloading) {'Выгружаются модели. Если сервер не отвечает, его процессы будут остановлены.'} elseif ($script:flow.Busy) {$busyText} elseif ($script:flow.Error) {$script:flow.Error} elseif ($script:flow.Step -eq 1 -and -not $script:flow.ConnectionValid) {$script:draftError} elseif ($script:flow.Step -eq 1 -and -not $script:flow.TokenReady) {'Введите API-токен локального сервера или отключите требование токена, если авторизация сервера выключена.'} elseif ($script:flow.Notice) {$script:flow.Notice} else {switch ($script:flow.Step) {1 {'Нажмите «Проверить сервер и найти модели». Установка нужна только если движок отсутствует.'} 2 {if ($script:flow.ModelValid) {'Основная модель проверена. Можно перейти к аккаунту профиля.'} else {'Выберите модель и нажмите «Проверить и использовать модель».'}} 3 {if ($script:flow.AccountValid) {'Подтвердите, что обнаруженная учётная запись — ваш отдельный аккаунт профиля.'} else {'Войдите в аккаунт профиля и нажмите «Проверить вход».'}} 4 {if ($script:flow.ProjectValid) {'Все обязательные шаги выполнены. Можно открыть локальный VS Code.'} else {'Выберите существующую отдельную папку проекта.'}}}}
     $root.RowStyles[5].Height=if ($showLog.Checked) {110} else {0};$log.Visible=$showLog.Checked
 }
 
@@ -340,7 +340,7 @@ function Start-WorkflowJob {
                 'Launch' {
                     if ($j.Provider.Kind -eq 'OpenAI') {[void](Assert-OpenAiRuntime)}
                     try {$auth=Get-IsolatedAccountStatus $j.Root} catch {throw ('ACCOUNT_GATE: ' + $_.Exception.Message)}
-                    if (-not $auth.LoggedIn -or $auth.Email -ne $j.Email) {throw 'ACCOUNT_GATE: Account B changed or signed out. Check the account again.'}
+                    if (-not $auth.LoggedIn -or $auth.Email -ne $j.Email) {throw 'ACCOUNT_GATE: Profile account changed or signed out. Check the account again.'}
                     $saved=Get-SwitcherConfig $j.Root
                     if ($saved.provider.Kind -ne $j.Provider.Kind -or $saved.provider.BaseUrl -ne $j.Provider.BaseUrl) {throw 'SERVER_GATE: Saved server changed. Check the connection again.'}
                     try {Assert-LocalProject $j.Project} catch {throw ('PROJECT_GATE: ' + $_.Exception.Message)}
@@ -407,9 +407,9 @@ function Poll-WorkflowJobs {
                         $script:flow.AccountValid=[bool]$data.account.LoggedIn
                         if (-not $data.account.LoggedIn -or $data.account.Email -ne $script:flow.AccountEmail) {$identityCheck.Checked=$false;$script:flow.IdentityConfirmed=$false}
                         $script:flow.AccountEmail=[string]$data.account.Email
-                        $accountLabel.Text=if ($script:flow.AccountValid) {"Вход claude.ai подтверждён: $($script:flow.AccountEmail)`r`nПроверьте, что это именно второй аккаунт B."} else {'В отдельном профиле нет входа claude.ai. Нажмите «Открыть вход в аккаунт B», завершите авторизацию и повторите проверку.'}
+                        $accountLabel.Text=if ($script:flow.AccountValid) {"Вход claude.ai подтверждён: $($script:flow.AccountEmail)`r`nПроверьте, что это именно нужный аккаунт."} else {'В отдельном профиле нет входа claude.ai. Нажмите «Открыть вход в аккаунт профиля», завершите авторизацию и повторите проверку.'}
                     }
-                    'Login' {$script:flow.Notice='Отдельный VS Code открыт. Завершите вход в аккаунт B, затем нажмите «Проверить вход».';Write-UiLog $script:flow.Notice}
+                    'Login' {$script:flow.Notice='Отдельный VS Code открыт. Завершите вход в аккаунт профиля, затем нажмите «Проверить вход».';Write-UiLog $script:flow.Notice}
                     'Launch' {$script:flow.Notice='Отдельный VS Code запущен с локальной моделью и выбранной папкой проекта.';Write-UiLog $script:flow.Notice}
                     'Test' {Write-UiLog 'Повторная проверка модели прошла.'}
                 }
@@ -443,7 +443,7 @@ function Cancel-WorkflowJob {
 }
 function Register-WorkflowProject {
     param([string]$ProjectPath)
-    if (-not (Get-WorkflowPolicy $script:flow).CanChooseProject) {throw 'Сначала проверьте модель и вход в аккаунт B.'}
+    if (-not (Get-WorkflowPolicy $script:flow).CanChooseProject) {throw 'Сначала проверьте модель и вход в аккаунт профиля.'}
     Assert-LocalProject $ProjectPath;Add-LocalProject $paths.Root $ProjectPath
     if (-not $projectBox.Items.Contains($ProjectPath)) {[void]$projectBox.Items.Add($ProjectPath)}
     $projectBox.SelectedItem=$ProjectPath
